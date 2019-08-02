@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -13,7 +13,6 @@
 #include "td/utils/Slice.h"
 
 namespace td {
-/*** ActorId ***/
 
 // If actor is on our scheduler(thread) result will be valid
 // If actor is on another scheduler we will see it in migrate_dest_flags
@@ -44,7 +43,6 @@ Slice ActorId<ActorType>::get_name() const {
   return ptr_->get_name();
 }
 
-// ActorOwn
 template <class ActorType>
 ActorOwn<ActorType>::ActorOwn(ActorId<ActorType> id) : id_(std::move(id)) {
 }
@@ -108,7 +106,6 @@ const ActorId<ActorType> *ActorOwn<ActorType>::operator->() const {
   return &id_;
 }
 
-// ActorShared
 template <class ActorType>
 template <class OtherActorType>
 ActorShared<ActorType>::ActorShared(ActorId<OtherActorType> id, uint64 token) : id_(std::move(id)), token_(token) {
@@ -180,9 +177,12 @@ const ActorId<ActorType> *ActorShared<ActorType>::operator->() const {
   return &id_;
 }
 
-/*** ActorRef ***/
 template <class T>
 ActorRef::ActorRef(const ActorId<T> &actor_id) : actor_id_(actor_id) {
+}
+template <class T>
+ActorRef::ActorRef(ActorId<T> &&actor_id) : actor_id_(actor_id) {
+  actor_id.clear();
 }
 template <class T>
 ActorRef::ActorRef(const ActorShared<T> &actor_id) : actor_id_(actor_id.get()), token_(actor_id.token()) {

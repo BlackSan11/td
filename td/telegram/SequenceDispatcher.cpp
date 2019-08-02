@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -9,6 +9,8 @@
 #include "td/telegram/Global.h"
 #include "td/telegram/net/NetQueryDispatcher.h"
 
+#include "td/actor/PromiseFuture.h"
+
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
@@ -17,6 +19,7 @@
 #include <limits>
 
 namespace td {
+
 /*** Sequence Dispatcher ***/
 // Sends queries with invokeAfter.
 //
@@ -49,6 +52,9 @@ void SequenceDispatcher::check_timeout(Data &data) {
   data.query_->total_timeout += data.total_timeout_;
   data.total_timeout_ = 0;
   if (data.query_->total_timeout > data.query_->total_timeout_limit) {
+    LOG(WARNING) << "Fail " << data.query_ << " to " << data.query_->source_ << " because total_timeout "
+                 << data.query_->total_timeout << " is greater than total_timeout_limit "
+                 << data.query_->total_timeout_limit;
     data.query_->set_error(Status::Error(
         429, PSLICE() << "Too Many Requests: retry after " << static_cast<int32>(data.last_timeout_ + 0.999)));
     data.state_ = State::Dummy;
@@ -147,6 +153,9 @@ void SequenceDispatcher::on_result(NetQueryPtr query) {
 void SequenceDispatcher::loop() {
   for (; finish_i_ < data_.size() && data_[finish_i_].state_ == State::Finish; finish_i_++) {
   }
+  if (next_i_ < finish_i_) {
+    next_i_ = finish_i_;
+  }
   for (; next_i_ < data_.size() && data_[next_i_].state_ != State::Wait && wait_cnt_ < MAX_SIMULTANEOUS_WAIT;
        next_i_++) {
     if (data_[next_i_].state_ == State::Finish) {
@@ -201,7 +210,7 @@ void SequenceDispatcher::timeout_expired() {
   }
   CHECK(!parent_.empty());
   set_timeout_in(1);
-  VLOG(DEBUG) << "SequenceDispatcher ready to close";
+  LOG(DEBUG) << "SequenceDispatcher ready to close";
   send_closure(parent_, &Parent::ready_to_close);
 }
 
@@ -215,7 +224,7 @@ void SequenceDispatcher::tear_down() {
       continue;
     }
     data.state_ = State::Dummy;
-    data.query_->set_error(Status::Error(500, "Internal Server Error: closing"));
+    data.query_->set_error(Status::Error(500, "Request aborted"));
     do_finish(data);
   }
 }
@@ -258,4 +267,5 @@ void MultiSequenceDispatcher::ready_to_close() {
     dispatchers_.erase(it);
   }
 }
+
 }  // namespace td

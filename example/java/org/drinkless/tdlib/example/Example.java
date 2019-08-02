@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -7,12 +7,12 @@
 package org.drinkless.tdlib.example;
 
 import org.drinkless.tdlib.Client;
-import org.drinkless.tdlib.Log;
 import org.drinkless.tdlib.TdApi;
 
-import java.io.Console;
 import java.io.IOError;
 import java.io.IOException;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.util.NavigableSet;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
@@ -50,14 +50,21 @@ public final class Example {
     private static final ConcurrentMap<Integer, TdApi.SupergroupFullInfo> supergroupsFullInfo = new ConcurrentHashMap<Integer, TdApi.SupergroupFullInfo>();
 
     private static final String newLine = System.getProperty("line.separator");
+    private static final String commandsLine = "Enter command (gcs - GetChats, gc <chatId> - GetChat, me - GetMe, sm <chatId> <message> - SendMessage, lo - LogOut, q - Quit): ";
+    private static volatile String currentPrompt = null;
 
     static {
         System.loadLibrary("tdjni");
     }
 
     private static void print(String str) {
-        System.out.println();
+        if (currentPrompt != null) {
+            System.out.println("");
+        }
         System.out.println(str);
+        if (currentPrompt != null) {
+            System.out.print(currentPrompt);
+        }
     }
 
     private static void setChatOrder(TdApi.Chat chat, long order) {
@@ -83,6 +90,7 @@ public final class Example {
         switch (Example.authorizationState.getConstructor()) {
             case TdApi.AuthorizationStateWaitTdlibParameters.CONSTRUCTOR:
                 TdApi.TdlibParameters parameters = new TdApi.TdlibParameters();
+                parameters.databaseDirectory = "tdlib";
                 parameters.useMessageDatabase = true;
                 parameters.useSecretChats = true;
                 parameters.apiId = 94575;
@@ -99,20 +107,17 @@ public final class Example {
                 client.send(new TdApi.CheckDatabaseEncryptionKey(), new AuthorizationRequestHandler());
                 break;
             case TdApi.AuthorizationStateWaitPhoneNumber.CONSTRUCTOR: {
-                Console console = System.console();
-                String phoneNumber = console.readLine("Please enter phone number: ");
+                String phoneNumber = promptString("Please enter phone number: ");
                 client.send(new TdApi.SetAuthenticationPhoneNumber(phoneNumber, false, false), new AuthorizationRequestHandler());
                 break;
             }
             case TdApi.AuthorizationStateWaitCode.CONSTRUCTOR: {
-                Console console = System.console();
-                String code = console.readLine("Please enter authentication code: ");
+                String code = promptString("Please enter authentication code: ");
                 client.send(new TdApi.CheckAuthenticationCode(code, "", ""), new AuthorizationRequestHandler());
                 break;
             }
             case TdApi.AuthorizationStateWaitPassword.CONSTRUCTOR: {
-                Console console = System.console();
-                String password = console.readLine("Please enter password: ");
+                String password = promptString("Please enter password: ");
                 client.send(new TdApi.CheckAuthenticationPassword(password), new AuthorizationRequestHandler());
                 break;
             }
@@ -162,8 +167,22 @@ public final class Example {
         return chatId;
     }
 
+    private static String promptString(String prompt) {
+        System.out.print(prompt);
+        currentPrompt = prompt;
+        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
+        String str = "";
+        try {
+            str = reader.readLine();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        currentPrompt = null;
+        return str;
+    }
+
     private static void getCommand() {
-        String command = System.console().readLine("Enter command (gcs - GetChats, gc <chatId> - GetChat, me - GetMe, sm <chatId> <message> - SendMessage, lo - LogOut, q - Quit): ");
+        String command = promptString(commandsLine);
         String[] commands = command.split(" ", 2);
         try {
             switch (commands[0]) {
@@ -250,6 +269,7 @@ public final class Example {
                     System.out.println(chatId + ": " + chat.title);
                 }
             }
+            print("");
         }
     }
 
@@ -264,8 +284,8 @@ public final class Example {
 
     public static void main(String[] args) throws InterruptedException {
         // disable TDLib log
-        Log.setVerbosityLevel(0);
-        if (!Log.setFilePath("log")) {
+        Client.execute(new TdApi.SetLogVerbosityLevel(0));
+        if (Client.execute(new TdApi.SetLogStream(new TdApi.LogStreamFile("tdlib.log", 1 << 27))) instanceof TdApi.Error) {
             throw new IOError(new IOException("Write access to the current directory is required"));
         }
 
@@ -464,13 +484,36 @@ public final class Example {
                     }
                     break;
                 }
-                case TdApi.UpdateNotificationSettings.CONSTRUCTOR: {
-                    TdApi.UpdateNotificationSettings update = (TdApi.UpdateNotificationSettings) object;
-                    if (update.scope instanceof TdApi.NotificationSettingsScopeChat) {
-                        TdApi.Chat chat = chats.get(((TdApi.NotificationSettingsScopeChat) update.scope).chatId);
-                        synchronized (chat) {
-                            chat.notificationSettings = update.notificationSettings;
-                        }
+                case TdApi.UpdateChatNotificationSettings.CONSTRUCTOR: {
+                    TdApi.UpdateChatNotificationSettings update = (TdApi.UpdateChatNotificationSettings) object;
+                    TdApi.Chat chat = chats.get(update.chatId);
+                    synchronized (chat) {
+                        chat.notificationSettings = update.notificationSettings;
+                    }
+                    break;
+                }
+                case TdApi.UpdateChatDefaultDisableNotification.CONSTRUCTOR: {
+                    TdApi.UpdateChatDefaultDisableNotification update = (TdApi.UpdateChatDefaultDisableNotification) object;
+                    TdApi.Chat chat = chats.get(update.chatId);
+                    synchronized (chat) {
+                        chat.defaultDisableNotification = update.defaultDisableNotification;
+                    }
+                    break;
+                }
+                case TdApi.UpdateChatIsMarkedAsUnread.CONSTRUCTOR: {
+                    TdApi.UpdateChatIsMarkedAsUnread update = (TdApi.UpdateChatIsMarkedAsUnread) object;
+                    TdApi.Chat chat = chats.get(update.chatId);
+                    synchronized (chat) {
+                        chat.isMarkedAsUnread = update.isMarkedAsUnread;
+                    }
+                    break;
+                }
+                case TdApi.UpdateChatIsSponsored.CONSTRUCTOR: {
+                    TdApi.UpdateChatIsSponsored updateChat = (TdApi.UpdateChatIsSponsored) object;
+                    TdApi.Chat chat = chats.get(updateChat.chatId);
+                    synchronized (chat) {
+                        chat.isSponsored = updateChat.isSponsored;
+                        setChatOrder(chat, updateChat.order);
                     }
                     break;
                 }

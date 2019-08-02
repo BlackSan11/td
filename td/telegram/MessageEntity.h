@@ -1,18 +1,19 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #pragma once
 
+#include "td/telegram/Dependencies.h"
+#include "td/telegram/DialogId.h"
 #include "td/telegram/UserId.h"
 
 #include "td/utils/common.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Status.h"
 #include "td/utils/StringBuilder.h"
-#include "td/utils/tl_helpers.h"
 
 #include "td/telegram/secret_api.h"
 #include "td/telegram/td_api.h"
@@ -42,7 +43,9 @@ class MessageEntity {
     Pre,
     PreCode,
     TextUrl,
-    MentionName
+    MentionName,
+    Cashtag,
+    PhoneNumber
   };
   Type type;
   int32 offset;
@@ -74,34 +77,11 @@ class MessageEntity {
     return !(*this == rhs);
   }
 
-  // TODO move to hpp
   template <class StorerT>
-  void store(StorerT &storer) const {
-    using td::store;
-    store(type, storer);
-    store(offset, storer);
-    store(length, storer);
-    if (type == Type::PreCode || type == Type::TextUrl) {
-      store(argument, storer);
-    }
-    if (type == Type::MentionName) {
-      store(user_id, storer);
-    }
-  }
+  void store(StorerT &storer) const;
 
   template <class ParserT>
-  void parse(ParserT &parser) {
-    using td::parse;
-    parse(type, parser);
-    parse(offset, parser);
-    parse(length, parser);
-    if (type == Type::PreCode || type == Type::TextUrl) {
-      parse(argument, parser);
-    }
-    if (type == Type::MentionName) {
-      parse(user_id, parser);
-    }
-  }
+  void parse(ParserT &parser);
 };
 
 StringBuilder &operator<<(StringBuilder &string_builder, const MessageEntity &message_entity);
@@ -111,16 +91,10 @@ struct FormattedText {
   vector<MessageEntity> entities;
 
   template <class StorerT>
-  void store(StorerT &storer) const {
-    td::store(text, storer);
-    td::store(entities, storer);
-  }
+  void store(StorerT &storer) const;
 
   template <class ParserT>
-  void parse(ParserT &parser) {
-    td::parse(text, parser);
-    td::parse(entities, parser);
-  }
+  void parse(ParserT &parser);
 };
 
 inline bool operator==(const FormattedText &lhs, const FormattedText &rhs) {
@@ -134,22 +108,18 @@ inline bool operator!=(const FormattedText &lhs, const FormattedText &rhs) {
 const std::unordered_set<Slice, SliceHash> &get_valid_short_usernames();
 
 Result<vector<MessageEntity>> get_message_entities(const ContactsManager *contacts_manager,
-                                                   const vector<tl_object_ptr<td_api::textEntity>> &input_entities);
+                                                   vector<tl_object_ptr<td_api::textEntity>> &&input_entities);
 
 vector<tl_object_ptr<td_api::textEntity>> get_text_entities_object(const vector<MessageEntity> &entities);
 
 td_api::object_ptr<td_api::formattedText> get_formatted_text_object(const FormattedText &text);
 
-// sorts entities, removes intersecting and empty entities
-void fix_entities(vector<MessageEntity> &entities);
-
 vector<MessageEntity> find_entities(Slice text, bool skip_bot_commands, bool only_urls = false);
-
-vector<MessageEntity> merge_entities(vector<MessageEntity> old_entities, vector<MessageEntity> new_entities);
 
 vector<Slice> find_mentions(Slice str);
 vector<Slice> find_bot_commands(Slice str);
 vector<Slice> find_hashtags(Slice str);
+vector<Slice> find_cashtags(Slice str);
 bool is_email_address(Slice str);
 vector<std::pair<Slice, bool>> find_urls(Slice str);  // slice + is_email_address
 
@@ -160,14 +130,38 @@ Result<vector<MessageEntity>> parse_markdown(string &text);
 Result<vector<MessageEntity>> parse_html(string &text);
 
 vector<tl_object_ptr<telegram_api::MessageEntity>> get_input_message_entities(const ContactsManager *contacts_manager,
-                                                                              const vector<MessageEntity> &entities);
+                                                                              const vector<MessageEntity> &entities,
+                                                                              const char *source);
+
+vector<tl_object_ptr<telegram_api::MessageEntity>> get_input_message_entities(const ContactsManager *contacts_manager,
+                                                                              const FormattedText *text,
+                                                                              const char *source);
 
 vector<tl_object_ptr<secret_api::MessageEntity>> get_input_secret_message_entities(
     const vector<MessageEntity> &entities);
 
 vector<MessageEntity> get_message_entities(const ContactsManager *contacts_manager,
-                                           vector<tl_object_ptr<telegram_api::MessageEntity>> &&server_entities);
+                                           vector<tl_object_ptr<telegram_api::MessageEntity>> &&server_entities,
+                                           const char *source);
 
 vector<MessageEntity> get_message_entities(vector<tl_object_ptr<secret_api::MessageEntity>> &&secret_entities);
+
+// like clean_input_string but also validates entities
+Status fix_formatted_text(string &text, vector<MessageEntity> &entities, bool allow_empty, bool skip_new_entities,
+                          bool skip_bot_commands, bool for_draft) TD_WARN_UNUSED_RESULT;
+
+FormattedText get_message_text(const ContactsManager *contacts_manager, string message_text,
+                               vector<tl_object_ptr<telegram_api::MessageEntity>> &&server_entities,
+                               bool skip_new_entities, int32 send_date, const char *source);
+
+td_api::object_ptr<td_api::formattedText> extract_input_caption(
+    tl_object_ptr<td_api::InputMessageContent> &input_message_content);
+
+Result<FormattedText> process_input_caption(const ContactsManager *contacts_manager, DialogId dialog_id,
+                                            tl_object_ptr<td_api::formattedText> &&caption, bool is_bot);
+
+void add_formatted_text_dependencies(Dependencies &dependencies, const FormattedText *text);
+
+bool need_skip_bot_commands(const ContactsManager *contacts_manager, DialogId dialog_id, bool is_bot);
 
 }  // namespace td

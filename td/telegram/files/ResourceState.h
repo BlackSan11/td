@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -8,10 +8,7 @@
 
 #include "td/utils/common.h"
 #include "td/utils/format.h"
-#include "td/utils/logging.h"
 #include "td/utils/StringBuilder.h"
-
-#include <algorithm>
 
 namespace td {
 
@@ -33,7 +30,18 @@ class ResourceState {
   }
 
   bool update_estimated_limit(int64 extra) {
-    auto new_estimated_limit = used_ + extra;
+    // unused() must be positive, i.e. used_ + using_ must be less than limit_
+    // TODO: use exact intersection between using_ and extra.
+    auto using_and_extra_intersection = min(using_, extra);  // between 0 and min(using_, extra)
+    auto new_estimated_limit = used_ + using_ + extra - using_and_extra_intersection;
+
+    // Use extra extra limit
+    if (new_estimated_limit < limit_) {
+      auto extra_limit = limit_ - new_estimated_limit;
+      used_ += extra_limit;
+      new_estimated_limit += extra_limit;
+    }
+
     if (new_estimated_limit == estimated_limit_) {
       return false;
     }
@@ -58,7 +66,7 @@ class ResourceState {
   }
 
   int64 estimated_extra() const {
-    auto new_unused = std::max(limit_, estimated_limit_) - using_ - used_;
+    auto new_unused = max(limit_, estimated_limit_) - using_ - used_;
     new_unused = static_cast<int64>((new_unused + unit_size() - 1) / unit_size() * unit_size());
     return new_unused + using_ + used_ - limit_;
   }

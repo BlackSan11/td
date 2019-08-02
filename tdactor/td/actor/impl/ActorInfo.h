@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -24,12 +24,13 @@
 #include <utility>
 
 namespace td {
-/*** ActorInfo ***/
+
 inline StringBuilder &operator<<(StringBuilder &sb, const ActorInfo &info) {
   sb << info.get_name() << ":" << const_cast<void *>(static_cast<const void *>(&info)) << ":"
      << const_cast<void *>(static_cast<const void *>(info.get_context()));
   return sb;
 }
+
 inline void ActorInfo::init(int32 sched_id, Slice name, ObjectPool<ActorInfo>::OwnerPtr &&this_ptr, Actor *actor_ptr,
                             Deleter deleter, bool is_lite) {
   CHECK(!is_running());
@@ -95,7 +96,7 @@ inline void ActorInfo::destroy_actor() {
 }
 
 template <class ActorT>
-ActorOwn<ActorT> ActorInfo::transfer_ownership_to_scheduler(std::unique_ptr<ActorT> actor) {
+ActorOwn<ActorT> ActorInfo::transfer_ownership_to_scheduler(unique_ptr<ActorT> actor) {
   CHECK(!empty());
   CHECK(deleter_ == Deleter::None);
   ActorT *actor_ptr = actor.release();
@@ -142,13 +143,14 @@ inline const Actor *ActorInfo::get_actor_unsafe() const {
   return actor_;
 }
 
-inline void ActorInfo::set_context(std::shared_ptr<ActorContext> context) {
+inline std::shared_ptr<ActorContext> ActorInfo::set_context(std::shared_ptr<ActorContext> context) {
   CHECK(is_running());
   context->this_ptr_ = context;
   context->tag_ = Scheduler::context()->tag_;
-  context_ = std::move(context);
+  std::swap(context_, context);
   Scheduler::context() = context_.get();
   Scheduler::on_context_updated();
+  return context;
 }
 inline const ActorContext *ActorInfo::get_context() const {
   return context_.get();
@@ -167,13 +169,13 @@ inline CSlice ActorInfo::get_name() const {
 }
 
 inline void ActorInfo::start_run() {
-  VLOG(actor) << "start_run: " << *this;
-  CHECK(!is_running_) << "Recursive call of actor " << tag("name", get_name());
+  VLOG(actor) << "Start run actor: " << *this;
+  LOG_CHECK(!is_running_) << "Recursive call of actor " << tag("name", get_name());
   is_running_ = true;
 }
 inline void ActorInfo::finish_run() {
   is_running_ = false;
-  VLOG(actor) << "stop_run: " << *this;
+  VLOG(actor) << "Stop run actor: " << *this;
 }
 
 inline bool ActorInfo::is_running() const {
@@ -198,4 +200,5 @@ inline const ListNode *ActorInfo::get_list_node() const {
 inline ActorInfo *ActorInfo::from_list_node(ListNode *node) {
   return static_cast<ActorInfo *>(node);
 }
+
 }  // namespace td

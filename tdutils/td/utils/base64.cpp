@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -7,7 +7,6 @@
 #include "td/utils/base64.h"
 
 #include "td/utils/common.h"
-#include "td/utils/logging.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Status.h"
 
@@ -23,7 +22,7 @@ string base64_encode(Slice input) {
   string base64;
   base64.reserve((input.size() + 2) / 3 * 4);
   for (size_t i = 0; i < input.size();) {
-    size_t left = std::min(input.size() - i, static_cast<size_t>(3));
+    size_t left = min(input.size() - i, static_cast<size_t>(3));
     int c = input.ubegin()[i++] << 16;
     base64 += symbols64[c >> 18];
     if (left != 1) {
@@ -50,7 +49,7 @@ string base64_encode(Slice input) {
 static unsigned char char_to_value[256];
 static void init_base64_table() {
   static bool is_inited = []() {
-    std::fill(std::begin(char_to_value), std::end(char_to_value), 64);
+    std::fill(std::begin(char_to_value), std::end(char_to_value), static_cast<unsigned char>(64));
     for (unsigned char i = 0; i < 64; i++) {
       char_to_value[static_cast<size_t>(symbols64[i])] = i;
     }
@@ -78,7 +77,7 @@ Result<string> base64_decode(Slice base64) {
   string output;
   output.reserve(((base64.size() + 3) >> 2) * 3);
   for (size_t i = 0; i < base64.size();) {
-    size_t left = std::min(base64.size() - i, static_cast<size_t>(4));
+    size_t left = min(base64.size() - i, static_cast<size_t>(4));
     int c = 0;
     for (size_t t = 0; t < left; t++) {
       auto value = char_to_value[base64.ubegin()[i++]];
@@ -112,7 +111,7 @@ string base64url_encode(Slice input) {
   string base64;
   base64.reserve((input.size() + 2) / 3 * 4);
   for (size_t i = 0; i < input.size();) {
-    size_t left = std::min(input.size() - i, static_cast<size_t>(3));
+    size_t left = min(input.size() - i, static_cast<size_t>(3));
     int c = input.ubegin()[i++] << 16;
     base64 += url_symbols64[c >> 18];
     if (left != 1) {
@@ -135,7 +134,7 @@ string base64url_encode(Slice input) {
 static unsigned char url_char_to_value[256];
 static void init_base64url_table() {
   static bool is_inited = []() {
-    std::fill(std::begin(url_char_to_value), std::end(url_char_to_value), 64);
+    std::fill(std::begin(url_char_to_value), std::end(url_char_to_value), static_cast<unsigned char>(64));
     for (unsigned char i = 0; i < 64; i++) {
       url_char_to_value[static_cast<size_t>(url_symbols64[i])] = i;
     }
@@ -163,7 +162,7 @@ Result<string> base64url_decode(Slice base64) {
   string output;
   output.reserve(((base64.size() + 3) >> 2) * 3);
   for (size_t i = 0; i < base64.size();) {
-    size_t left = std::min(base64.size() - i, static_cast<size_t>(4));
+    size_t left = min(base64.size() - i, static_cast<size_t>(4));
     int c = 0;
     for (size_t t = 0; t < left; t++) {
       auto value = url_char_to_value[base64.ubegin()[i++]];

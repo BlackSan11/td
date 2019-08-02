@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -8,6 +8,7 @@
 
 #include "td/utils/JsonBuilder.h"
 #include "td/utils/logging.h"
+#include "td/utils/Slice.h"
 #include "td/utils/StringBuilder.h"
 
 #include <tuple>
@@ -17,7 +18,7 @@ REGISTER_TESTS(json)
 
 using namespace td;
 
-static void decode_encode(string str) {
+static void decode_encode(string str, string result = "") {
   auto str_copy = str;
   auto r_value = json_decode(str_copy);
   ASSERT_TRUE(r_value.is_ok());
@@ -26,12 +27,15 @@ static void decode_encode(string str) {
     return;
   }
   auto new_str = json_encode<string>(r_value.ok());
-  ASSERT_EQ(str, new_str);
+  if (result.empty()) {
+    result = str;
+  }
+  ASSERT_EQ(result, new_str);
 }
 
 TEST(JSON, array) {
   char tmp[1000];
-  StringBuilder sb({tmp, sizeof(tmp)});
+  StringBuilder sb(MutableSlice{tmp, sizeof(tmp)});
   JsonBuilder jb(std::move(sb));
   jb.enter_value().enter_array() << "Hello" << -123;
   ASSERT_EQ(jb.string_builder().is_error(), false);
@@ -41,7 +45,7 @@ TEST(JSON, array) {
 }
 TEST(JSON, object) {
   char tmp[1000];
-  StringBuilder sb({tmp, sizeof(tmp)});
+  StringBuilder sb(MutableSlice{tmp, sizeof(tmp)});
   JsonBuilder jb(std::move(sb));
   auto c = jb.enter_object();
   c << std::tie("key", "value");
@@ -55,7 +59,7 @@ TEST(JSON, object) {
 
 TEST(JSON, nested) {
   char tmp[1000];
-  StringBuilder sb({tmp, sizeof(tmp)});
+  StringBuilder sb(MutableSlice{tmp, sizeof(tmp)});
   JsonBuilder jb(std::move(sb));
   {
     auto a = jb.enter_array();
@@ -81,6 +85,11 @@ TEST(JSON, kphp) {
       "\\u1234"
       "\"");
   decode_encode(
+      "{\"keyboard\":[[\"\\u2022 abcdefg\"],[\"\\u2022 hijklmnop\"],[\"\\u2022 "
+      "qrstuvwxyz\"]],\"one_time_keyboard\":true}");
+  decode_encode(
+      "  \n   {  \"keyboard\"  : \n  [[  \"\\u2022 abcdefg\"  ]  , \n [  \"\\u2022 hijklmnop\" \n ],[  \n \"\\u2022 "
+      "qrstuvwxyz\"]], \n  \"one_time_keyboard\"\n:\ntrue\n}\n   \n",
       "{\"keyboard\":[[\"\\u2022 abcdefg\"],[\"\\u2022 hijklmnop\"],[\"\\u2022 "
       "qrstuvwxyz\"]],\"one_time_keyboard\":true}");
 }

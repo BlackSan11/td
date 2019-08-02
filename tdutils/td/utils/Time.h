@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -10,7 +10,6 @@
 #include "td/utils/port/Clocks.h"
 
 #include <atomic>
-#include <cmath>
 
 namespace td {
 
@@ -53,6 +52,9 @@ class Timestamp {
   static Timestamp at(double timeout) {
     return Timestamp{timeout};
   }
+  static Timestamp at_unix(double timeout) {
+    return Timestamp{timeout - td::Clocks::system() + Time::now()};
+  }
 
   static Timestamp in(double timeout) {
     return Timestamp{Time::now_cached() + timeout};
@@ -83,9 +85,7 @@ class Timestamp {
     }
   }
 
-  friend bool operator==(Timestamp a, Timestamp b) {
-    return std::abs(a.at() - b.at()) < 1e-6;
-  }
+  friend bool operator==(Timestamp a, Timestamp b);
 
  private:
   double at_{0};
@@ -93,5 +93,15 @@ class Timestamp {
   explicit Timestamp(double timeout) : at_(timeout) {
   }
 };
+
+template <class StorerT>
+void store(const Timestamp &timestamp, StorerT &storer) {
+  storer.store_binary(timestamp.at() - Time::now() + Clocks::system());
+}
+
+template <class ParserT>
+void parse(Timestamp &timestamp, ParserT &parser) {
+  timestamp = Timestamp::in(parser.fetch_double() - Clocks::system());
+}
 
 }  // namespace td

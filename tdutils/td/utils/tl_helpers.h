@@ -1,12 +1,11 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #pragma once
 
-#include "td/utils/buffer.h"  // for BufferSlice
 #include "td/utils/common.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
@@ -20,29 +19,45 @@
 #include <unordered_set>
 
 #define BEGIN_STORE_FLAGS() \
-  uint32 flags_store = 0;   \
+  do {                      \
+    uint32 flags_store = 0; \
   uint32 bit_offset_store = 0
 
 #define STORE_FLAG(flag)                     \
   flags_store |= (flag) << bit_offset_store; \
   bit_offset_store++
 
-#define END_STORE_FLAGS()       \
-  CHECK(bit_offset_store < 32); \
-  td::store(flags_store, storer)
+#define END_STORE_FLAGS()         \
+  CHECK(bit_offset_store < 31);   \
+  td::store(flags_store, storer); \
+  }                               \
+  while (false)
 
-#define BEGIN_PARSE_FLAGS()    \
-  uint32 flags_parse;          \
-  uint32 bit_offset_parse = 0; \
+#define BEGIN_PARSE_FLAGS()      \
+  do {                           \
+    uint32 flags_parse;          \
+    uint32 bit_offset_parse = 0; \
   td::parse(flags_parse, parser)
 
 #define PARSE_FLAG(flag)                               \
   flag = ((flags_parse >> bit_offset_parse) & 1) != 0; \
   bit_offset_parse++
 
-#define END_PARSE_FLAGS() CHECK(bit_offset_parse < 32)
+#define END_PARSE_FLAGS()                                                   \
+  CHECK(bit_offset_parse < 31);                                             \
+  LOG_CHECK((flags_parse & ~((1 << bit_offset_parse) - 1)) == 0)            \
+      << flags_parse << " " << bit_offset_parse << " " << parser.version(); \
+  }                                                                         \
+  while (false)
+
+#define END_PARSE_FLAGS_GENERIC()                                                                           \
+  CHECK(bit_offset_parse < 31);                                                                             \
+  LOG_CHECK((flags_parse & ~((1 << bit_offset_parse) - 1)) == 0) << flags_parse << " " << bit_offset_parse; \
+  }                                                                                                         \
+  while (false)
 
 namespace td {
+
 template <class StorerT>
 void store(bool x, StorerT &storer) {
   storer.store_binary(static_cast<int32>(x));
@@ -109,15 +124,6 @@ void parse(string &x, ParserT &parser) {
   x = parser.template fetch_string<string>();
 }
 
-template <class StorerT>
-void store(const BufferSlice &x, StorerT &storer) {
-  storer.store_string(x);
-}
-template <class ParserT>
-void parse(BufferSlice &x, ParserT &parser) {
-  x = parser.template fetch_string<BufferSlice>();
-}
-
 template <class T, class StorerT>
 void store(const vector<T> &vec, StorerT &storer) {
   storer.store_binary(narrow_cast<int32>(vec.size()));
@@ -153,8 +159,8 @@ void parse(std::unordered_set<Key, Hash, KeyEqual, Allocator> &s, ParserT &parse
     return;
   }
   s.clear();
-  Key val;
   for (uint32 i = 0; i < size; i++) {
+    Key val;
     parse(val, parser);
     s.insert(std::move(val));
   }
@@ -190,13 +196,15 @@ string serialize(const T &object) {
   if (!is_aligned_pointer<4>(key.data())) {
     auto ptr = StackAllocator::alloc(length);
     MutableSlice data = ptr.as_slice();
-    TlStorerUnsafe storer(data.begin());
+    TlStorerUnsafe storer(data.ubegin());
     store(object, storer);
+    CHECK(storer.get_buf() == data.uend());
     key.assign(data.begin(), data.size());
   } else {
     MutableSlice data = key;
-    TlStorerUnsafe storer(data.begin());
+    TlStorerUnsafe storer(data.ubegin());
     store(object, storer);
+    CHECK(storer.get_buf() == data.uend());
   }
   return key;
 }
@@ -208,4 +216,5 @@ TD_WARN_UNUSED_RESULT Status unserialize(T &object, Slice data) {
   parser.fetch_end();
   return parser.get_status();
 }
+
 }  // namespace td

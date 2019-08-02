@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -88,8 +88,7 @@ TEST(StringCleaning, strip_empty_characters) {
   check_strip_empty_characters(empty, 1000000, "");
   check_strip_empty_characters(empty + "a", 1000000, empty + "a");
   check_strip_empty_characters(spaces + empty + spaces + "abc" + spaces, 1000000, empty + spaces_replace + "abc");
-  check_strip_empty_characters(spaces + spaces + empty + spaces + spaces + empty + empty, 1000000,
-                               empty + spaces_replace + spaces_replace + empty + empty);
+  check_strip_empty_characters(spaces + spaces + empty + spaces + spaces + empty + empty, 1000000, "");
   check_strip_empty_characters("\r\r\r\r\r\r\r", 1000000, "");
   check_strip_empty_characters("\r\n\r\n\r\n\r\n\r\n\r\n\r", 1000000, "");
   check_strip_empty_characters(Slice(" \t\r\n\0\va\v\0\n\r\t ").str(), 1000000, "a");

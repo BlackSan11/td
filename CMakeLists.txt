@@ -1,8 +1,33 @@
 cmake_minimum_required(VERSION 3.0.2 FATAL_ERROR)
 
-project(TDLib VERSION 1.1.1 LANGUAGES CXX C)
+project(TDLib VERSION 1.4.0 LANGUAGES CXX C)
+
+if (POLICY CMP0054)
+  # do not expand quoted arguments
+  cmake_policy(SET CMP0054 NEW)
+endif()
+
+# Prevent in-source build
+get_filename_component(TD_REAL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" REALPATH)
+get_filename_component(TD_REAL_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}" REALPATH)
+
+if (TD_REAL_BINARY_DIR STREQUAL TD_REAL_SOURCE_DIR)
+  message("  Out-of-source build should be used to build TDLib.")
+  message("  You need to remove the files already created by CMake and")
+  message("  rerun CMake from a new directory:")
+  message("  rm -rf CMakeFiles CMakeCache.txt")
+  message("  mkdir build")
+  message("  cd build")
+  message("  cmake ..")
+  message(FATAL_ERROR "In-source build failed.")
+endif()
 
 option(TD_ENABLE_JNI "Use \"ON\" to enable JNI-compatible TDLib API.")
+option(TD_ENABLE_DOTNET "Use \"ON\" to enable generation of C++/CLI or C++/CX TDLib API bindings.")
+
+if (TD_ENABLE_DOTNET AND (CMAKE_VERSION VERSION_LESS "3.1.0"))
+  message(FATAL_ERROR "CMake 3.1.0 or higher is required. You are running version ${CMAKE_VERSION}.")
+endif()
 
 if (NOT DEFINED CMAKE_MODULE_PATH)
   set(CMAKE_MODULE_PATH "")
@@ -16,14 +41,26 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 enable_testing()
 
 if (POLICY CMP0069)
-  cmake_policy(SET CMP0069 NEW)
-  include(CheckIPOSupported)
-  check_ipo_supported(RESULT IPO_SUPPORTED)
-  if (IPO_SUPPORTED)
-    #set_property(DIRECTORY PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE) do not work?
-    string(REPLACE ";" " " CXX_FLAGS_IPO "${CMAKE_CXX_COMPILE_OPTIONS_IPO}")
-    message(STATUS "Use link time optimizations: ${CXX_FLAGS_IPO}")
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} ${CXX_FLAGS_IPO}")
+  option(TD_ENABLE_LTO "Use \"ON\" to enable Link Time Optimization.")
+
+  if (TD_ENABLE_LTO)
+    cmake_policy(SET CMP0069 NEW)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT IPO_SUPPORTED)
+    if (IPO_SUPPORTED)
+      # set_property(DIRECTORY PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE) do not work?
+      string(REPLACE ";" " " CXX_FLAGS_IPO "${CMAKE_CXX_COMPILE_OPTIONS_IPO}")
+      message(STATUS "Use link time optimization CXX options: ${CXX_FLAGS_IPO}")
+      set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} ${CXX_FLAGS_IPO}")
+
+      string(REPLACE ";" " " C_FLAGS_IPO "${CMAKE_C_COMPILE_OPTIONS_IPO}")
+      message(STATUS "Use link time optimization C options: ${C_FLAGS_IPO}")
+      set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} ${C_FLAGS_IPO}")
+
+      string(REPLACE ";" " " LINK_FLAGS_IPO "${CMAKE_CXX_LINK_OPTIONS_IPO}")
+      message(STATUS "Use link time optimization linker options: ${LINK_FLAGS_IPO}")
+      set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} ${LINK_FLAGS_IPO}")
+    endif()
   endif()
 endif()
 
@@ -35,29 +72,30 @@ if (CCACHE_FOUND)
   set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE ccache)
   set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ccache)
 else()
-  message(STATUS "Could NOT find ccache")
+  message(STATUS "Could NOT find ccache (this is NOT an error)")
 endif()
 
 set(MEMPROF "" CACHE STRING "Use one of \"ON\", \"FAST\" or \"SAFE\" to enable memory profiling. \
-Works under Mac OS and Linux when compiled using glibc. \
+Works under macOS and Linux when compiled using glibc. \
 In FAST mode stack is unwinded only using frame pointers, which may fail. \
 In SAFE mode stack is unwinded using backtrace function from execinfo.h, which may be very slow. \
 By default both methods are used to achieve maximum speed and accuracy")
 
-# LIBRARIES
 if (EMSCRIPTEN)
   # use prebuilt zlib
   set(ZLIB_FOUND 1)
   set(ZLIB_LIBRARIES)
   set(ZLIB_INCLUDE_DIR)
 
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Os -s ALLOW_MEMORY_GROWTH=1 -s USE_ZLIB=1 -s MODULARIZE=1 -s EXTRA_EXPORTED_RUNTIME_METHODS=\"['FS']\"")
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Os -s ALLOW_MEMORY_GROWTH=1 -s USE_ZLIB=1 -s MODULARIZE=1 -s EXTRA_EXPORTED_RUNTIME_METHODS=\"['FS']\"")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s ALLOW_MEMORY_GROWTH=1 -s MEMFS_APPEND_TO_TYPED_ARRAYS=1 -s USE_ZLIB=1 -s MODULARIZE=1 -s WEBSOCKET_URL=\"'wss:#'\" -s EXTRA_EXPORTED_RUNTIME_METHODS=\"['FS','cwrap']\"")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -s ALLOW_MEMORY_GROWTH=1 -s MEMFS_APPEND_TO_TYPED_ARRAYS=1 -s USE_ZLIB=1 -s MODULARIZE=1 -s WEBSOCKET_URL=\"'wss:#'\" -s EXTRA_EXPORTED_RUNTIME_METHODS=\"['FS','cwrap']\"")
   set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -s DEMANGLE_SUPPORT=1 -s ASSERTIONS=1")
   set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -s DEMANGLE_SUPPORT=1 -s ASSERTIONS=1")
 
   if (ASMJS)
     set(TD_EMSCRIPTEN td_asmjs)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s WASM=0 -Wno-almost-asm")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -s WASM=0 -Wno-almost-asm")
   else()
     set(TD_EMSCRIPTEN td_wasm)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s WASM=1")
@@ -72,11 +110,11 @@ if (OPENSSL_FOUND)
   message(STATUS "Found OpenSSL: ${OPENSSL_INCLUDE_DIR} ${OPENSSL_LIBRARIES}")
 endif()
 
-if (${CMAKE_CXX_COMPILER_ID} STREQUAL GNU)
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   set(GCC 1)
-elseif (${CMAKE_CXX_COMPILER_ID} MATCHES Clang)
+elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   set(CLANG 1)
-elseif (${CMAKE_CXX_COMPILER_ID} STREQUAL Intel)
+elseif (CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
   set(INTEL 1)
 elseif (NOT MSVC)
   message(FATAL_ERROR "Compiler isn't supported")
@@ -86,14 +124,14 @@ include(CheckCXXCompilerFlag)
 
 if (GCC OR CLANG OR INTEL)
   if (WIN32 AND INTEL)
-    SET(STD14_FLAG /Qstd=c++14)
+    set(STD14_FLAG /Qstd=c++14)
   else()
-    SET(STD14_FLAG -std=c++14)
+    set(STD14_FLAG -std=c++14)
   endif()
-  CHECK_CXX_COMPILER_FLAG(${STD14_FLAG} HAVE_STD14)
+  check_cxx_compiler_flag(${STD14_FLAG} HAVE_STD14)
   if (NOT HAVE_STD14)
     string(REPLACE "c++14" "c++1y" STD14_FLAG "${STD14_FLAG}")
-    CHECK_CXX_COMPILER_FLAG(${STD14_FLAG} HAVE_STD1Y)
+    check_cxx_compiler_flag(${STD14_FLAG} HAVE_STD1Y)
     set(HAVE_STD14 ${HAVE_STD1Y})
   endif()
 elseif (MSVC)
@@ -117,18 +155,19 @@ if (MSVC)
     string(REPLACE "/RTC1" " " CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
   endif()
   add_definitions(-D_SCL_SECURE_NO_WARNINGS -D_CRT_SECURE_NO_WARNINGS)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /GR- /W4 /wd4100 /wd4127 /wd4324 /wd4505 /wd4702")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /utf-8 /GR- /W4 /wd4100 /wd4127 /wd4324 /wd4505 /wd4814 /wd4702")
 elseif (CLANG OR GCC)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${STD14_FLAG} -fno-omit-frame-pointer -fno-exceptions -fno-rtti")
   if (APPLE)
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-dead_strip,-x,-S")
   else()
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections -fdata-sections")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffunction-sections -fdata-sections")
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--gc-sections -Wl,--exclude-libs,ALL")
   endif()
 
   if (MEMPROF)
-    CHECK_CXX_COMPILER_FLAG(-no-pie CXX_NO_PIE_FLAG)
+    check_cxx_compiler_flag(-no-pie CXX_NO_PIE_FLAG)
     if (CXX_NO_PIE_FLAG)
       set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -no-pie")
     elseif (APPLE)
@@ -146,44 +185,54 @@ if (CYGWIN)
   add_definitions(-D_DEFAULT_SOURCE=1 -DFD_SETSIZE=4096)
 endif()
 
-if (NOT ANDROID) # _FILE_OFFSET_BITS is broken in ndk r15 and r15b and doesn't work prior to Android 7.0
+if (NOT ANDROID) # _FILE_OFFSET_BITS is broken in NDK r15, r15b and r17 and doesn't work prior to Android 7.0
   add_definitions(-D_FILE_OFFSET_BITS=64)
 endif()
 
 include(AddCXXCompilerFlag)
 if (NOT MSVC)
   add_cxx_compiler_flag("-Wall")
+  add_cxx_compiler_flag("-Wextra")
+  add_cxx_compiler_flag("-Wimplicit-fallthrough=2")
+  add_cxx_compiler_flag("-Wpointer-arith")
+  add_cxx_compiler_flag("-Wcast-qual")
+  add_cxx_compiler_flag("-Wsign-compare")
+  add_cxx_compiler_flag("-Wduplicated-branches")
+  add_cxx_compiler_flag("-Wduplicated-cond")
+  add_cxx_compiler_flag("-Walloc-zero")
+  add_cxx_compiler_flag("-Wlogical-op")
+  add_cxx_compiler_flag("-Wno-tautological-compare")
+  add_cxx_compiler_flag("-Wpointer-arith")
+  add_cxx_compiler_flag("-Wvla")
+  add_cxx_compiler_flag("-Wnon-virtual-dtor")
+  add_cxx_compiler_flag("-Wno-unused-parameter")
+  add_cxx_compiler_flag("-Wconversion")
+  add_cxx_compiler_flag("-Wno-sign-conversion")
+  add_cxx_compiler_flag("-Wc++14-compat-pedantic")
+  add_cxx_compiler_flag("-Wdeprecated")
+  add_cxx_compiler_flag("-Qunused-arguments")
+  add_cxx_compiler_flag("-Wodr")
+  add_cxx_compiler_flag("-flto-odr-type-merging")
+
+#  add_cxx_compiler_flag("-Werror")
+
+#  add_cxx_compiler_flag("-Wcast-align")
+
+#std::int32_t <-> int and off_t <-> std::size_t/std::int64_t
+#  add_cxx_compiler_flag("-Wuseless-cast")
+
+#external headers like openssl
+#  add_cxx_compiler_flag("-Wzero-as-null-pointer-constant")
 endif()
-add_cxx_compiler_flag("-Wextra")
-add_cxx_compiler_flag("-Wimplicit-fallthrough=2")
-add_cxx_compiler_flag("-Wpointer-arith")
-add_cxx_compiler_flag("-Wcast-qual")
-add_cxx_compiler_flag("-Wsign-compare")
-add_cxx_compiler_flag("-Wduplicated-branches")
-add_cxx_compiler_flag("-Wduplicated-cond")
-add_cxx_compiler_flag("-Walloc-zero")
-add_cxx_compiler_flag("-Wlogical-op")
-add_cxx_compiler_flag("-Wno-tautological-compare")
-add_cxx_compiler_flag("-Wpointer-arith")
-add_cxx_compiler_flag("-Wvla")
-add_cxx_compiler_flag("-Wnon-virtual-dtor")
-add_cxx_compiler_flag("-Wno-unused-parameter")
-add_cxx_compiler_flag("-Wconversion")
-add_cxx_compiler_flag("-Wno-sign-conversion")
-add_cxx_compiler_flag("-Wc++14-compat-pedantic")
-add_cxx_compiler_flag("-Qunused-arguments")
-add_cxx_compiler_flag("-Wodr")
-add_cxx_compiler_flag("-flto-odr-type-merging")
 
-#add_cxx_compiler_flag("-Werror")
-
-#add_cxx_compiler_flag("-Wcast-align")
-
-# std::int32_t <-> int and off_t <-> std::size_t/std::int64_t
-#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wuseless-cast")
-
-# external headers like openssl
-#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wzero-as-null-pointer-constant")
+if (GCC AND NOT (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 7.0))
+  add_cxx_compiler_flag("-Wno-maybe-uninitialized")  # too much false positives
+endif()
+if (GCC AND NOT (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0))
+  # warns about a lot of "return std::move", which are not redundant for compilers without fix for DR 1579, i.e. GCC 4.9 or clang 3.8
+  # see http://www.open-std.org/jtc1/sc22/wg21/docs/cwg_defects.html#1579
+  add_cxx_compiler_flag("-Wno-redundant-move")
+endif()
 
 #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -isystem /usr/include/c++/v1")
 #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
@@ -199,7 +248,17 @@ add_subdirectory(tdutils)
 add_subdirectory(td/generate)
 
 if (NOT CMAKE_CROSSCOMPILING)
-  add_custom_target(prepare_cross_compiling DEPENDS tl_generate_common tdmime_auto)
+  add_custom_target(prepare_cross_compiling DEPENDS tl_generate_common tdmime_auto tl_generate_json)
+  if (TD_ENABLE_DOTNET)
+    add_custom_target(remove_cpp_documentation
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+      COMMAND remove_documentation ${TL_TD_AUTO} td/telegram/Client.h td/telegram/Log.h td/tl/TlObject.h
+      COMMENT "Remove C++ documentation from sources"
+      DEPENDS remove_documentation tl_generate_common generate_dotnet_api ${TL_TD_AUTO} td/telegram/Client.h td/telegram/Log.h td/tl/TlObject.h
+    )
+
+    add_dependencies(prepare_cross_compiling generate_dotnet_api remove_cpp_documentation)
+  endif()
 endif()
 
 if (NOT OPENSSL_FOUND)
@@ -270,8 +329,16 @@ set(TL_C_SCHEME_SOURCE
   ${TL_C_AUTO}
 )
 
+set_source_files_properties(${TL_DOTNET_AUTO} PROPERTIES GENERATED TRUE)
+set(TL_DOTNET_SCHEME_SOURCE
+  ${TL_DOTNET_AUTO}
+  td/tl/tl_dotnet_object.h
+)
+
 set(TDLIB_SOURCE
+  td/mtproto/AuthData.cpp
   td/mtproto/crypto.cpp
+  td/mtproto/DhHandshake.cpp
   td/mtproto/Handshake.cpp
   td/mtproto/HandshakeActor.cpp
   td/mtproto/HttpTransport.cpp
@@ -294,14 +361,20 @@ set(TDLIB_SOURCE
   td/telegram/ConfigShared.cpp
   td/telegram/Contact.cpp
   td/telegram/ContactsManager.cpp
+  td/telegram/DelayDispatcher.cpp
   td/telegram/DeviceTokenManager.cpp
   td/telegram/DhCache.cpp
   td/telegram/DialogDb.cpp
   td/telegram/DialogId.cpp
   td/telegram/DialogParticipant.cpp
+  td/telegram/Document.cpp
   td/telegram/DocumentsManager.cpp
+  td/telegram/DraftMessage.cpp
+  td/telegram/FileReferenceManager.cpp
+  td/telegram/files/FileBitmask.cpp
   td/telegram/files/FileDb.cpp
   td/telegram/files/FileDownloader.cpp
+  td/telegram/files/FileEncryptionKey.cpp
   td/telegram/files/FileFromBytes.cpp
   td/telegram/files/FileGcParameters.cpp
   td/telegram/files/FileGcWorker.cpp
@@ -320,7 +393,12 @@ set(TDLIB_SOURCE
   td/telegram/Global.cpp
   td/telegram/HashtagHints.cpp
   td/telegram/InlineQueriesManager.cpp
+  td/telegram/InputMessageText.cpp
+  td/telegram/JsonValue.cpp
+  td/telegram/LanguagePackManager.cpp
   td/telegram/Location.cpp
+  td/telegram/Logging.cpp
+  td/telegram/MessageContent.cpp
   td/telegram/MessageEntity.cpp
   td/telegram/MessagesDb.cpp
   td/telegram/MessagesManager.cpp
@@ -342,43 +420,60 @@ set(TDLIB_SOURCE
   td/telegram/net/Session.cpp
   td/telegram/net/SessionProxy.cpp
   td/telegram/net/SessionMultiProxy.cpp
+  td/telegram/NotificationManager.cpp
+  td/telegram/NotificationSettings.cpp
+  td/telegram/NotificationType.cpp
   td/telegram/Payments.cpp
   td/telegram/PasswordManager.cpp
+  td/telegram/PhoneNumberManager.cpp
   td/telegram/PrivacyManager.cpp
   td/telegram/Photo.cpp
+  td/telegram/PollManager.cpp
+  td/telegram/QueryCombiner.cpp
   td/telegram/ReplyMarkup.cpp
   td/telegram/SecretChatActor.cpp
   td/telegram/SecretChatDb.cpp
   td/telegram/SecretChatsManager.cpp
+  td/telegram/SecureManager.cpp
+  td/telegram/SecureStorage.cpp
+  td/telegram/SecureValue.cpp
+  td/telegram/SendCodeHelper.cpp
   td/telegram/SequenceDispatcher.cpp
   td/telegram/StateManager.cpp
   td/telegram/StickersManager.cpp
   td/telegram/StorageManager.cpp
   td/telegram/Td.cpp
   td/telegram/TdDb.cpp
+  td/telegram/TermsOfService.cpp
   td/telegram/TopDialogManager.cpp
   td/telegram/UpdatesManager.cpp
   td/telegram/VideoNotesManager.cpp
   td/telegram/VideosManager.cpp
   td/telegram/VoiceNotesManager.cpp
+  td/telegram/WallpaperManager.cpp
+  td/telegram/WebPageBlock.cpp
   td/telegram/WebPagesManager.cpp
 
   td/mtproto/AuthData.h
   td/mtproto/AuthKey.h
   td/mtproto/crypto.h
   td/mtproto/CryptoStorer.h
+  td/mtproto/DhHandshake.h
   td/mtproto/Handshake.h
   td/mtproto/HandshakeActor.h
   td/mtproto/HandshakeConnection.h
   td/mtproto/HttpTransport.h
   td/mtproto/IStreamTransport.h
   td/mtproto/NoCryptoStorer.h
+  td/mtproto/PacketInfo.h
   td/mtproto/PacketStorer.h
   td/mtproto/PingConnection.h
+  td/mtproto/Query.h
   td/mtproto/RawConnection.h
   td/mtproto/SessionConnection.h
   td/mtproto/TcpTransport.h
   td/mtproto/Transport.h
+  td/mtproto/TransportType.h
   td/mtproto/utils.h
 
   td/telegram/AccessRights.h
@@ -397,15 +492,25 @@ set(TDLIB_SOURCE
   td/telegram/ConfigShared.h
   td/telegram/Contact.h
   td/telegram/ContactsManager.h
+  td/telegram/DelayDispatcher.h
+  td/telegram/Dependencies.h
   td/telegram/DeviceTokenManager.h
   td/telegram/DhCache.h
   td/telegram/DhConfig.h
+  td/telegram/DialogDate.h
   td/telegram/DialogDb.h
   td/telegram/DialogId.h
   td/telegram/DialogParticipant.h
+  td/telegram/Document.h
   td/telegram/DocumentsManager.h
+  td/telegram/DraftMessage.h
+  td/telegram/FileReferenceManager.h
+  td/telegram/files/FileBitmask.h
+  td/telegram/files/FileData.h
   td/telegram/files/FileDb.h
+  td/telegram/files/FileDbId.h
   td/telegram/files/FileDownloader.h
+  td/telegram/files/FileEncryptionKey.h
   td/telegram/files/FileFromBytes.h
   td/telegram/files/FileGcParameters.h
   td/telegram/files/FileGcWorker.h
@@ -418,8 +523,10 @@ set(TDLIB_SOURCE
   td/telegram/files/FileLoadManager.h
   td/telegram/files/FileLocation.h
   td/telegram/files/FileManager.h
+  td/telegram/files/FileSourceId.h
   td/telegram/files/FileStats.h
   td/telegram/files/FileStatsWorker.h
+  td/telegram/files/FileType.h
   td/telegram/files/FileUploader.h
   td/telegram/files/PartsManager.h
   td/telegram/files/ResourceManager.h
@@ -428,9 +535,15 @@ set(TDLIB_SOURCE
   td/telegram/Global.h
   td/telegram/HashtagHints.h
   td/telegram/InlineQueriesManager.h
+  td/telegram/InputMessageText.h
+  td/telegram/JsonValue.h
+  td/telegram/LanguagePackManager.h
   td/telegram/Location.h
   td/telegram/logevent/LogEvent.h
+  td/telegram/logevent/LogEventHelper.h
   td/telegram/logevent/SecretChatEvent.h
+  td/telegram/Logging.h
+  td/telegram/MessageContent.h
   td/telegram/MessageEntity.h
   td/telegram/MessageId.h
   td/telegram/MessagesDb.h
@@ -457,18 +570,36 @@ set(TDLIB_SOURCE
   td/telegram/net/SessionProxy.h
   td/telegram/net/SessionMultiProxy.h
   td/telegram/net/TempAuthKeyWatchdog.h
+  td/telegram/Notification.h
+  td/telegram/NotificationGroupId.h
+  td/telegram/NotificationGroupKey.h
+  td/telegram/NotificationGroupType.h
+  td/telegram/NotificationId.h
+  td/telegram/NotificationManager.h
+  td/telegram/NotificationSettings.h
+  td/telegram/NotificationType.h
   td/telegram/PasswordManager.h
   td/telegram/Payments.h
+  td/telegram/PhoneNumberManager.h
   td/telegram/Photo.h
+  td/telegram/PollId.h
+  td/telegram/PollManager.h
   td/telegram/PrivacyManager.h
   td/telegram/PtsManager.h
+  td/telegram/QueryCombiner.h
   td/telegram/ReplyMarkup.h
+  td/telegram/RequestActor.h
   td/telegram/SecretChatActor.h
   td/telegram/SecretChatId.h
   td/telegram/SecretChatDb.h
   td/telegram/SecretChatsManager.h
   td/telegram/SecretInputMedia.h
+  td/telegram/SecureManager.h
+  td/telegram/SecureStorage.h
+  td/telegram/SecureValue.h
+  td/telegram/SendCodeHelper.h
   td/telegram/SequenceDispatcher.h
+  td/telegram/SetWithPosition.h
   td/telegram/StateManager.h
   td/telegram/StickersManager.h
   td/telegram/StorageManager.h
@@ -476,6 +607,7 @@ set(TDLIB_SOURCE
   td/telegram/TdCallback.h
   td/telegram/TdDb.h
   td/telegram/TdParameters.h
+  td/telegram/TermsOfService.h
   td/telegram/TopDialogManager.h
   td/telegram/UniqueId.h
   td/telegram/UpdatesManager.h
@@ -484,18 +616,33 @@ set(TDLIB_SOURCE
   td/telegram/VideoNotesManager.h
   td/telegram/VideosManager.h
   td/telegram/VoiceNotesManager.h
+  td/telegram/WallpaperManager.h
+  td/telegram/WebPageBlock.h
   td/telegram/WebPageId.h
   td/telegram/WebPagesManager.h
 
   td/telegram/AnimationsManager.hpp
   td/telegram/AudiosManager.hpp
+  td/telegram/AuthManager.hpp
+  td/telegram/Document.hpp
   td/telegram/DocumentsManager.hpp
+  td/telegram/DraftMessage.hpp
+  td/telegram/FileReferenceManager.hpp
+  td/telegram/files/FileData.hpp
   td/telegram/files/FileId.hpp
+  td/telegram/files/FileLocation.hpp
   td/telegram/files/FileManager.hpp
   td/telegram/Game.hpp
+  td/telegram/InputMessageText.hpp
+  td/telegram/MessageEntity.hpp
+  td/telegram/NotificationSettings.hpp
   td/telegram/Payments.hpp
   td/telegram/Photo.hpp
+  td/telegram/PollId.hpp
+  td/telegram/PollManager.hpp
   td/telegram/ReplyMarkup.hpp
+  td/telegram/SecureValue.hpp
+  td/telegram/SendCodeHelper.hpp
   td/telegram/StickersManager.hpp
   td/telegram/VideoNotesManager.hpp
   td/telegram/VideosManager.hpp
@@ -537,7 +684,7 @@ if (MEMPROF)
     target_compile_definitions(memprof PRIVATE -DUSE_MEMPROF_SAFE=1)
   elseif (MEMPROF STREQUAL "FAST")
     target_compile_definitions(memprof PRIVATE -DUSE_MEMPROF_FAST=1)
-  elseif (NOT ${MEMPROF})
+  elseif (NOT MEMPROF)
     message(FATAL_ERROR "Unsupported MEMPROF value \"${MEMPROF}\"")
   endif()
 endif()
@@ -547,7 +694,7 @@ endif()
 add_library(tdcore STATIC ${TDLIB_SOURCE})
 target_include_directories(tdcore PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>)
 target_include_directories(tdcore SYSTEM PRIVATE ${OPENSSL_INCLUDE_DIR})
-target_link_libraries(tdcore PUBLIC tdactor tdutils tdnet tddb PRIVATE ${OPENSSL_CRYPTO_LIBRARY})
+target_link_libraries(tdcore PUBLIC tdactor tdutils tdnet tddb PRIVATE ${OPENSSL_CRYPTO_LIBRARY} ${CMAKE_DL_LIBS} ${ZLIB_LIBRARIES})
 
 if (TD_ENABLE_JNI AND NOT ANDROID) # jni is available by default on Android
   if (NOT JNI_FOUND)
@@ -563,6 +710,9 @@ if (NOT CMAKE_CROSSCOMPILING)
   if (TD_ENABLE_JNI)
     add_dependencies(tdcore td_generate_java_api)
   endif()
+  if (TD_ENABLE_DOTNET)
+    add_dependencies(tdcore remove_cpp_documentation)
+  endif()
 endif()
 
 add_library(tdclient td/telegram/Client.cpp td/telegram/Client.h td/telegram/Log.cpp td/telegram/Log.h)
@@ -577,8 +727,34 @@ if (TD_ENABLE_JNI AND NOT ANDROID) # jni is available by default on Android
   target_link_libraries(tdclient PUBLIC ${JAVA_JVM_LIBRARY})
 endif()
 
+if (TD_ENABLE_DOTNET)
+  add_library(tddotnet SHARED
+    td/telegram/ClientDotNet.cpp
+    td/telegram/LogDotNet.cpp
+    ${TL_DOTNET_SCHEME_SOURCE}
+  )
+  set(VCPKG_APPLOCAL_LIBRARY_DEPS ON)
+  set_target_properties(tddotnet PROPERTIES OUTPUT_NAME Telegram.Td)
+  target_link_libraries(tddotnet PRIVATE tdclient tdutils)
+  target_include_directories(tddotnet PUBLIC
+    $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>
+  )
+  if (NOT CMAKE_CROSSCOMPILING)
+    add_dependencies(tddotnet generate_dotnet_api)
+  endif()
+
+  target_compile_options(tddotnet PRIVATE "/doc")
+  if (CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+    set_target_properties(tddotnet PROPERTIES VS_WINRT_COMPONENT "true")
+    target_compile_options(tddotnet PUBLIC "/ZW")
+  else()
+    set_target_properties(tddotnet PROPERTIES COMPILE_FLAGS "/GR /clr")
+    target_compile_options(tddotnet PUBLIC "/EHa")
+  endif()
+endif()
+
 # tdc - TDLib interface in pure c.
-add_library(tdc STATIC ${TL_C_SCHEME_SOURCE} td/telegram/td_c_client.cpp td/telegram/td_c_client.h)
+add_library(tdc STATIC EXCLUDE_FROM_ALL ${TL_C_SCHEME_SOURCE} td/telegram/td_c_client.cpp td/telegram/td_c_client.h)
 target_include_directories(tdc PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
   $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDES}>)
@@ -594,6 +770,9 @@ target_include_directories(tdjson_private PUBLIC
 target_link_libraries(tdjson_private PUBLIC tdclient tdutils)
 if (NOT CMAKE_CROSSCOMPILING)
   add_dependencies(tdjson_private tl_generate_common tl_generate_json)
+  if (TD_ENABLE_DOTNET)
+    add_dependencies(tdjson_private remove_cpp_documentation)
+  endif()
 endif()
 
 set(TD_JSON_HEADERS td/telegram/td_json_client.h td/telegram/td_log.h)
@@ -604,7 +783,9 @@ include(GenerateExportHeader)
 add_library(tdjson SHARED ${TD_JSON_SOURCE} ${TD_JSON_HEADERS})
 target_link_libraries(tdjson PRIVATE tdjson_private)
 generate_export_header(tdjson EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/td/telegram/tdjson_export.h)
-target_include_directories(tdjson PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>)
+target_include_directories(tdjson PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
 if (APPLE)
   set_target_properties(tdjson PROPERTIES LINK_FLAGS "-Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/tdclientjson_export_list")
 endif()
@@ -612,7 +793,9 @@ endif()
 add_library(tdjson_static STATIC ${TD_JSON_SOURCE} ${TD_JSON_HEADERS})
 target_link_libraries(tdjson_static PRIVATE tdjson_private)
 target_compile_definitions(tdjson_static PUBLIC TDJSON_STATIC_DEFINE)
-target_include_directories(tdjson_static PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>)
+target_include_directories(tdjson_static PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
 
 set(BIGOBJ)
 if (WIN32 OR CYGWIN)
@@ -628,13 +811,16 @@ if (BIGOBJ)
   target_compile_options(tdclient PUBLIC ${BIGOBJ})
   target_compile_options(tdjson PUBLIC ${BIGOBJ})
   target_compile_options(tdjson_static PUBLIC ${BIGOBJ})
+  if (TD_ENABLE_DOTNET)
+    target_compile_options(tddotnet PUBLIC "/bigobj")
+  endif()
 endif()
 
 if (EMSCRIPTEN)
   set(TD_EMSCRIPTEN_SRC td/telegram/td_emscripten.cpp)
   add_executable(${TD_EMSCRIPTEN} ${TD_EMSCRIPTEN_SRC})
   target_include_directories(${TD_EMSCRIPTEN} PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
-  target_link_libraries(${TD_EMSCRIPTEN} PRIVATE tdjson_static)
+  target_link_libraries(${TD_EMSCRIPTEN} PRIVATE tdjson_static tdactor)
 endif()
 
 #EXECUTABLES
@@ -645,12 +831,26 @@ if (NOT CMAKE_CROSSCOMPILING)
     find_package(Readline)
   endif()
   if (NOT READLINE_FOUND)
-    message(STATUS "Could NOT find Readline")
+    message(STATUS "Could NOT find Readline (this is NOT an error)")
   else()
     message(STATUS "Found Readline: ${READLINE_INCLUDE_DIR} ${READLINE_LIBRARY}")
-    target_link_libraries(tg_cli PRIVATE ${READLINE_LIBRARY})
-    target_include_directories(tg_cli SYSTEM PRIVATE ${READLINE_INCLUDE_DIR})
-    target_compile_definitions(tg_cli PRIVATE -DUSE_READLINE=1)
+    if (NOT USABLE_READLINE_FOUND)
+      set(CMAKE_REQUIRED_INCLUDES "${READLINE_INCLUDE_DIR}")
+      set(CMAKE_REQUIRED_LIBRARIES "${READLINE_LIBRARY}")
+      include(CheckCXXSourceCompiles)
+      unset(USABLE_READLINE_FOUND CACHE)
+      check_cxx_source_compiles("#include <stdio.h>\n#include <readline/readline.h>\nint main() { rl_free(0); }" USABLE_READLINE_FOUND)
+      if (NOT USABLE_READLINE_FOUND)
+        message(STATUS "Found Readline is too old, ignore it (this is NOT an error)")
+        unset(READLINE_INCLUDE_DIR CACHE)
+        unset(READLINE_LIBRARY CACHE)
+      endif()
+    endif()
+    if (USABLE_READLINE_FOUND)
+      target_link_libraries(tg_cli PRIVATE ${READLINE_LIBRARY})
+      target_include_directories(tg_cli SYSTEM PRIVATE ${READLINE_INCLUDE_DIR})
+      target_compile_definitions(tg_cli PRIVATE -DUSE_READLINE=1)
+    endif()
   endif()
   target_link_libraries(tg_cli PRIVATE memprof tdclient tdcore tdtl)
   add_dependencies(tg_cli tl_generate_json)
@@ -699,3 +899,7 @@ write_basic_package_version_file("TdConfigVersion.cmake"
 install(FILES "TdConfig.cmake" "${CMAKE_CURRENT_BINARY_DIR}/TdConfigVersion.cmake"
   DESTINATION lib/cmake/Td
 )
+
+# Add SOVERSION to shared libraries
+set_property(TARGET tdclient PROPERTY SOVERSION ${TDLib_VERSION})
+set_property(TARGET tdjson PROPERTY SOVERSION ${TDLib_VERSION})

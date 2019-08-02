@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -11,6 +11,7 @@
 #include <unordered_map>
 
 namespace td {
+
 class SeqKeyValue {
  public:
   using SeqNo = uint64;
@@ -51,7 +52,7 @@ class SeqKeyValue {
   }
 
   template <class F>
-  void foreach (const F &f) {
+  void foreach(const F &f) {
     for (auto &it : map_) {
       f(it.first, it.second);
     }
@@ -75,4 +76,5 @@ class SeqKeyValue {
     return ++current_id_;
   }
 };
+
 }  // namespace td

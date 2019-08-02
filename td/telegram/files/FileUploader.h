@@ -1,34 +1,36 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #pragma once
 
-#include "td/actor/actor.h"
-#include "td/actor/PromiseFuture.h"
-
+#include "td/telegram/files/FileEncryptionKey.h"
 #include "td/telegram/files/FileLoader.h"
 #include "td/telegram/files/FileLocation.h"
+#include "td/telegram/files/FileType.h"
 
 #include "td/utils/port/FileFd.h"
 #include "td/utils/Status.h"
+#include "td/utils/UInt.h"
 
 #include <utility>
 
 namespace td {
+
 class FileUploader : public FileLoader {
  public:
   class Callback : public FileLoader::Callback {
    public:
+    virtual void on_hash(string hash) = 0;
     virtual void on_partial_upload(const PartialRemoteFileLocation &partial_remote, int64 ready_size) = 0;
     virtual void on_ok(FileType file_type, const PartialRemoteFileLocation &partial_remote, int64 size) = 0;
     virtual void on_error(Status status) = 0;
   };
 
   FileUploader(const LocalFileLocation &local, const RemoteFileLocation &remote, int64 expected_size,
-               const FileEncryptionKey &encryption_key, std::vector<int> bad_parts, std::unique_ptr<Callback> callback);
+               const FileEncryptionKey &encryption_key, std::vector<int> bad_parts, unique_ptr<Callback> callback);
 
   // Should just implement all parent pure virtual methods.
   // Must not call any of them...
@@ -39,7 +41,7 @@ class FileUploader : public FileLoader {
   int64 expected_size_;
   FileEncryptionKey encryption_key_;
   std::vector<int> bad_parts_;
-  std::unique_ptr<Callback> callback_;
+  unique_ptr<Callback> callback_;
   int64 local_size_ = 0;
   bool local_is_ready_ = false;
   FileType file_type_ = FileType::Temp;
@@ -52,6 +54,7 @@ class FileUploader : public FileLoader {
 
   FileFd fd_;
   string fd_path_;
+  bool is_temp_ = false;
   int64 file_id_;
   bool big_flag_;
 
@@ -62,9 +65,10 @@ class FileUploader : public FileLoader {
   void after_start_parts() override;
   Result<std::pair<NetQueryPtr, bool>> start_part(Part part, int32 part_count) override TD_WARN_UNUSED_RESULT;
   Result<size_t> process_part(Part part, NetQueryPtr net_query) override TD_WARN_UNUSED_RESULT;
-  void on_progress(int32 part_count, int32 part_size, int32 ready_part_count, bool is_ready, int64 ready_size) override;
+  void on_progress(Progress progress) override;
   FileLoader::Callback *get_callback() override;
-  Result<PrefixInfo> on_update_local_location(const LocalFileLocation &location) override TD_WARN_UNUSED_RESULT;
+  Result<PrefixInfo> on_update_local_location(const LocalFileLocation &location,
+                                              int64 file_size) override TD_WARN_UNUSED_RESULT;
 
   Status generate_iv_map();
 
@@ -73,4 +77,5 @@ class FileUploader : public FileLoader {
   void try_release_fd();
   Status acquire_fd() TD_WARN_UNUSED_RESULT;
 };
+
 }  // namespace td

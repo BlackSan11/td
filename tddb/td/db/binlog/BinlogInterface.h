@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -15,6 +15,7 @@
 #include "td/utils/common.h"
 
 namespace td {
+
 class BinlogInterface {
  public:
   BinlogInterface() = default;
@@ -30,11 +31,14 @@ class BinlogInterface {
   void close_and_destroy(Promise<> promise = {}) {
     close_and_destroy_impl(std::move(promise));
   }
+  void add_raw_event(BinlogDebugInfo info, uint64 id, BufferSlice &&raw_event, Promise<> promise = Promise<>()) {
+    add_raw_event_impl(id, std::move(raw_event), std::move(promise), info);
+  }
   void add_raw_event(uint64 id, BufferSlice &&raw_event, Promise<> promise = Promise<>()) {
-    add_raw_event_impl(id, std::move(raw_event), std::move(promise));
+    add_raw_event_impl(id, std::move(raw_event), std::move(promise), {});
   }
   void lazy_sync(Promise<> promise = Promise<>()) {
-    add_raw_event_impl(next_id(), BufferSlice(), std::move(promise));
+    add_raw_event_impl(next_id(), BufferSlice(), std::move(promise), {});
   }
   virtual void force_sync(Promise<> promise) = 0;
   virtual void force_flush() = 0;
@@ -46,6 +50,7 @@ class BinlogInterface {
  protected:
   virtual void close_impl(Promise<> promise) = 0;
   virtual void close_and_destroy_impl(Promise<> promise) = 0;
-  virtual void add_raw_event_impl(uint64 id, BufferSlice &&raw_event, Promise<> promise) = 0;
+  virtual void add_raw_event_impl(uint64 id, BufferSlice &&raw_event, Promise<> promise, BinlogDebugInfo info) = 0;
 };
+
 }  // namespace td

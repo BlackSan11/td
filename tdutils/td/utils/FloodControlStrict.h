@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -7,9 +7,7 @@
 #pragma once
 
 #include "td/utils/common.h"
-#include "td/utils/logging.h"
 
-#include <algorithm>
 #include <limits>
 
 namespace td {
@@ -62,13 +60,13 @@ class FloodControlStrict {
 
       if (limit.count_ + limit.pos_ <= events_.size()) {
         CHECK(limit.count_ + limit.pos_ == events_.size());
-        wakeup_at_ = std::max(wakeup_at_, events_[limit.pos_].timestamp_ + limit.duration_);
+        wakeup_at_ = max(wakeup_at_, events_[limit.pos_].timestamp_ + limit.duration_);
         without_update_ = 0;
       } else {
-        without_update_ = std::min(without_update_, limit.count_ + limit.pos_ - events_.size());
+        without_update_ = min(without_update_, limit.count_ + limit.pos_ - events_.size());
       }
 
-      min_pos = std::min(min_pos, limit.pos_);
+      min_pos = min(min_pos, limit.pos_);
     }
 
     if (min_pos * 2 > events_.size()) {

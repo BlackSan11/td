@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -9,7 +9,7 @@
 #include "td/telegram/td_api.h"
 #include "td/telegram/telegram_api.h"
 
-#include "td/mtproto/crypto.h"
+#include "td/mtproto/DhHandshake.h"
 
 #include "td/telegram/CallDiscardReason.h"
 #include "td/telegram/CallId.h"
@@ -26,6 +26,7 @@
 #include <memory>
 
 namespace td {
+
 struct CallProtocol {
   bool udp_p2p{true};
   bool udp_reflector{true};
@@ -51,7 +52,7 @@ struct CallConnection {
 };
 
 struct CallState {
-  enum class Type { Empty, Pending, ExchangingKey, Ready, HangingUp, Discarded, Error } type{Type::Empty};
+  enum class Type : int32 { Empty, Pending, ExchangingKey, Ready, HangingUp, Discarded, Error } type{Type::Empty};
 
   CallProtocol protocol;
   std::vector<CallConnection> connections;
@@ -65,6 +66,7 @@ struct CallState {
   string key;
   string config;
   vector<string> emojis_fingerprint;
+  bool allow_p2p{false};
 
   Status error;
 
@@ -97,7 +99,7 @@ class CallActor : public NetQueryCallback {
   int32 duration_{0};
   int64 connection_id_{0};
 
-  enum class State {
+  enum class State : int32 {
     Empty,
     SendRequestQuery,
     WaitRequestResult,
@@ -117,6 +119,8 @@ class CallActor : public NetQueryCallback {
 
   CallId local_call_id_;
   int64 call_id_{0};
+  bool is_call_id_inited_{false};
+  bool has_notification_{false};
   int64 call_access_hash_{0};
   int32 call_admin_id_{0};
   int32 call_participant_id_{0};
@@ -125,7 +129,9 @@ class CallActor : public NetQueryCallback {
   bool call_state_need_flush_{false};
   bool call_state_has_config_{false};
 
-  tl_object_ptr<telegram_api::inputPhoneCall> get_input_phone_call();
+  NetQueryRef request_query_ref_;
+
+  tl_object_ptr<telegram_api::inputPhoneCall> get_input_phone_call(const char *source);
   bool load_dh_config();
   void on_dh_config(Result<std::shared_ptr<DhConfig>> r_dh_config, bool dummy);
   void do_load_dh_config(Promise<std::shared_ptr<DhConfig>> promise);
@@ -152,6 +158,10 @@ class CallActor : public NetQueryCallback {
   void try_send_discard_query();
   void on_discard_query_result(NetQueryPtr net_query);
 
+  void on_begin_exchanging_key();
+
+  void on_call_discarded(CallDiscardReason reason, bool need_rating, bool need_debug);
+
   void on_set_rating_query_result(NetQueryPtr net_query);
   void on_set_debug_query_result(NetQueryPtr net_query);
 
@@ -169,7 +179,9 @@ class CallActor : public NetQueryCallback {
   void send_with_promise(NetQueryPtr query, Promise<NetQueryPtr> promise);
 
   void timeout_expired() override;
+  void hangup() override;
 
   void on_error(Status status);
 };
+
 }  // namespace td

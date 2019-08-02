@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -8,6 +8,8 @@
 
 #include "td/telegram/net/NetQuery.h"
 
+#include "td/actor/actor.h"
+
 #include "td/utils/common.h"
 #include "td/utils/Random.h"
 
@@ -15,6 +17,7 @@
 #include <unordered_map>
 
 namespace td {
+
 class SequenceDispatcher : public NetQueryCallback {
  public:
   class Parent : public Actor {
@@ -30,7 +33,7 @@ class SequenceDispatcher : public NetQueryCallback {
   void close_silent();
 
  private:
-  enum class State { Start, Wait, Finish, Dummy };
+  enum class State : int32 { Start, Wait, Finish, Dummy };
   struct Data {
     State state_;
     NetQueryRef net_query_ref_;
@@ -83,4 +86,5 @@ class MultiSequenceDispatcher : public SequenceDispatcher::Parent {
   void on_result() override;
   void ready_to_close() override;
 };
+
 }  // namespace td

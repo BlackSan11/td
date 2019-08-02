@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -81,7 +81,7 @@ DialogParticipantStatus DialogParticipantStatus::Banned(int32 banned_until_date)
 }
 
 DialogParticipantStatus DialogParticipantStatus::GroupAdministrator(bool is_creator) {
-  return DialogParticipantStatus::Administrator(is_creator, true, false, false, true, true, false, true, false, false);
+  return DialogParticipantStatus::Administrator(is_creator, true, false, false, true, true, false, true, true, false);
 }
 
 DialogParticipantStatus DialogParticipantStatus::ChannelAdministrator(bool is_creator, bool is_megagroup) {
@@ -371,20 +371,26 @@ DialogParticipantStatus get_dialog_participant_status(
                                              can_send_games, can_use_inline_bots, can_add_web_page_previews);
 }
 
+StringBuilder &operator<<(StringBuilder &string_builder, const DialogParticipant &dialog_participant) {
+  return string_builder << '[' << dialog_participant.user_id << " invited by " << dialog_participant.inviter_user_id
+                        << " at " << dialog_participant.joined_date << " with status " << dialog_participant.status
+                        << ']';
+}
+
 tl_object_ptr<telegram_api::ChannelParticipantsFilter>
 ChannelParticipantsFilter::get_input_channel_participants_filter() const {
   switch (type) {
-    case Recent:
+    case Type::Recent:
       return make_tl_object<telegram_api::channelParticipantsRecent>();
-    case Administrators:
+    case Type::Administrators:
       return make_tl_object<telegram_api::channelParticipantsAdmins>();
-    case Search:
+    case Type::Search:
       return make_tl_object<telegram_api::channelParticipantsSearch>(query);
-    case Restricted:
+    case Type::Restricted:
       return make_tl_object<telegram_api::channelParticipantsBanned>(query);
-    case Banned:
+    case Type::Banned:
       return make_tl_object<telegram_api::channelParticipantsKicked>(query);
-    case Bots:
+    case Type::Bots:
       return make_tl_object<telegram_api::channelParticipantsBots>();
     default:
       UNREACHABLE();
@@ -394,34 +400,75 @@ ChannelParticipantsFilter::get_input_channel_participants_filter() const {
 
 ChannelParticipantsFilter::ChannelParticipantsFilter(const tl_object_ptr<td_api::SupergroupMembersFilter> &filter) {
   if (filter == nullptr) {
-    type = Recent;
+    type = Type::Recent;
     return;
   }
   switch (filter->get_id()) {
     case td_api::supergroupMembersFilterRecent::ID:
-      type = Recent;
+      type = Type::Recent;
       return;
     case td_api::supergroupMembersFilterAdministrators::ID:
-      type = Administrators;
+      type = Type::Administrators;
       return;
     case td_api::supergroupMembersFilterSearch::ID:
-      type = Search;
+      type = Type::Search;
       query = static_cast<const td_api::supergroupMembersFilterSearch *>(filter.get())->query_;
       return;
     case td_api::supergroupMembersFilterRestricted::ID:
-      type = Restricted;
+      type = Type::Restricted;
       query = static_cast<const td_api::supergroupMembersFilterRestricted *>(filter.get())->query_;
       return;
     case td_api::supergroupMembersFilterBanned::ID:
-      type = Banned;
+      type = Type::Banned;
       query = static_cast<const td_api::supergroupMembersFilterBanned *>(filter.get())->query_;
       return;
     case td_api::supergroupMembersFilterBots::ID:
-      type = Bots;
+      type = Type::Bots;
       return;
     default:
       UNREACHABLE();
-      type = Recent;
+      type = Type::Recent;
+  }
+}
+
+StringBuilder &operator<<(StringBuilder &string_builder, const ChannelParticipantsFilter &filter) {
+  switch (filter.type) {
+    case ChannelParticipantsFilter::Type::Recent:
+      return string_builder << "Recent";
+    case ChannelParticipantsFilter::Type::Administrators:
+      return string_builder << "Administrators";
+    case ChannelParticipantsFilter::Type::Search:
+      return string_builder << "Search \"" << filter.query << '"';
+    case ChannelParticipantsFilter::Type::Restricted:
+      return string_builder << "Restricted \"" << filter.query << '"';
+    case ChannelParticipantsFilter::Type::Banned:
+      return string_builder << "Banned \"" << filter.query << '"';
+    case ChannelParticipantsFilter::Type::Bots:
+      return string_builder << "Bots";
+    default:
+      UNREACHABLE();
+      return string_builder;
+  }
+}
+
+DialogParticipantsFilter get_dialog_participants_filter(const tl_object_ptr<td_api::ChatMembersFilter> &filter) {
+  if (filter == nullptr) {
+    return DialogParticipantsFilter::Members;
+  }
+  switch (filter->get_id()) {
+    case td_api::chatMembersFilterAdministrators::ID:
+      return DialogParticipantsFilter::Administrators;
+    case td_api::chatMembersFilterMembers::ID:
+      return DialogParticipantsFilter::Members;
+    case td_api::chatMembersFilterRestricted::ID:
+      return DialogParticipantsFilter::Restricted;
+    case td_api::chatMembersFilterBanned::ID:
+      return DialogParticipantsFilter::Banned;
+    case td_api::chatMembersFilterBots::ID:
+      return DialogParticipantsFilter::Bots;
+    default:
+      UNREACHABLE();
+      return DialogParticipantsFilter::Members;
   }
 }
 

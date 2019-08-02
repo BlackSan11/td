@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -229,6 +229,10 @@ class TlWriterCCommon : public tl::TL_writer {
              "#ifdef __cplusplus\n"
              "extern \"C\" {\n"
              "#endif\n"
+             "struct TdBytes {\n"
+             "  unsigned char *data;\n"
+             "  int len;\n"
+             "};\n"
              "#define TDC_VECTOR(tdc_type_name,tdc_type) \\\n"
              "   struct TdVector ## tdc_type_name { \\\n"
              "     int len;\\\n"
@@ -238,6 +242,7 @@ class TlWriterCCommon : public tl::TL_writer {
              "TDC_VECTOR(Int,int)\n"
              "TDC_VECTOR(Long,long long)\n"
              "TDC_VECTOR(String,char *)\n"
+             "TDC_VECTOR(Bytes,TdBytes)\n"
              "struct TdStackStorerMethods {\n"
              "  void (*pack_string)(const char *s);\n"
              "  void (*pack_bytes)(const unsigned char *s, int len);\n"
@@ -259,10 +264,6 @@ class TlWriterCCommon : public tl::TL_writer {
              "  void (*get_arr_field)(int idx);\n"
              "  int (*get_arr_size)(void);\n"
              "  int (*is_nil)(void);\n"
-             "};\n"
-             "struct TdBytes {\n"
-             "  unsigned char *data;\n"
-             "  int len;\n"
              "};\n";
     }
     if (is_header_ == -1) {
@@ -1027,11 +1028,12 @@ class TlWriterCCommon : public tl::TL_writer {
     return "";
   }
 
-  std::string gen_fetch_function_begin(const std::string &parser_name, const std::string &class_name, int arity,
+  std::string gen_fetch_function_begin(const std::string &parser_name, const std::string &class_name,
+                                       const std::string &parent_class_name, int arity,
                                        std::vector<tl::var_description> &vars, int parser_type) const override {
     return "";
   }
-  std::string gen_fetch_function_end(int field_num, const std::vector<tl::var_description> &vars,
+  std::string gen_fetch_function_end(bool has_parent, int field_num, const std::vector<tl::var_description> &vars,
                                      int parser_type) const override {
     return "";
   }

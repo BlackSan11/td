@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -8,21 +8,25 @@
 
 #include "td/mtproto/AuthKey.h"
 #include "td/mtproto/crypto.h"
+#include "td/mtproto/DhHandshake.h"
 
 #include "td/utils/buffer.h"
-#include "td/utils/int_types.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Status.h"
+#include "td/utils/StorerBase.h"
+#include "td/utils/UInt.h"
 
 namespace td {
-class Storer;
+
 namespace mtproto {
+
 class AuthKeyHandshakeContext {
  public:
   virtual ~AuthKeyHandshakeContext() = default;
   virtual DhCallback *get_dh_callback() = 0;
   virtual PublicRsaKeyInterface *get_public_rsa_key_interface() = 0;
 };
+
 class AuthKeyHandshake {
  public:
   class Callback {
@@ -41,29 +45,30 @@ class AuthKeyHandshake {
 
   bool is_ready_for_start();
   Status start_main(Callback *connection) TD_WARN_UNUSED_RESULT;
-  Status start_tmp(Callback *connection, int32 expire_in) TD_WARN_UNUSED_RESULT;
+  Status start_tmp(Callback *connection, int32 expires_in) TD_WARN_UNUSED_RESULT;
 
   bool is_ready_for_message(const UInt128 &message_nonce);
 
   bool is_ready_for_finish();
   void on_finish();
 
-  explicit AuthKeyHandshake(int32 expire_in = 0) {
-    if (expire_in == 0) {
+  AuthKeyHandshake(int32 dc_id, int32 expires_in) {
+    dc_id_ = dc_id;
+    if (expires_in == 0) {
       mode_ = Mode::Main;
     } else {
       mode_ = Mode::Temp;
-      expire_in_ = expire_in;
+      expires_in_ = expires_in;
     }
   }
   void init_main() {
     clear();
     mode_ = Mode::Main;
   }
-  void init_temp(int32 expire_in) {
+  void init_temp(int32 expires_in) {
     clear();
     mode_ = Mode::Temp;
-    expire_in_ = expire_in;
+    expires_in_ = expires_in;
   }
   void resume(Callback *connection);
   Status on_message(Slice message, Callback *connection, Context *context) TD_WARN_UNUSED_RESULT;
@@ -76,8 +81,9 @@ class AuthKeyHandshake {
   using State = enum { Start, ResPQ, ServerDHParams, DHGenResponse, Finish };
   State state_ = Start;
   Mode mode_ = Mode::Unknown;
-  int32 expire_in_;
-  double expire_at_ = 0;
+  int32 dc_id_ = 0;
+  int32 expires_in_ = 0;
+  double expires_at_ = 0;
 
   UInt128 nonce;
   UInt128 server_nonce;
@@ -98,5 +104,6 @@ class AuthKeyHandshake {
   Status on_server_dh_params(Slice message, Callback *connection, DhCallback *dh_callback) TD_WARN_UNUSED_RESULT;
   Status on_dh_gen_response(Slice message, Callback *connection) TD_WARN_UNUSED_RESULT;
 };
+
 }  // namespace mtproto
 }  // namespace td

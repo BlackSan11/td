@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -9,10 +9,10 @@
 #include "td/actor/actor.h"
 #include "td/actor/PromiseFuture.h"
 
+#include "td/utils/common.h"
 #include "td/utils/logging.h"
 #include "td/utils/Random.h"
 
-#include <initializer_list>
 #include <limits>
 #include <map>
 #include <utility>
@@ -50,8 +50,8 @@ static uint32 slow_pow_mod_uint32(uint32 x, uint32 p) {
 }
 
 struct Query {
-  uint32 query_id;
-  uint32 result;
+  uint32 query_id{};
+  uint32 result{};
   std::vector<int> todo;
   Query() = default;
   Query(const Query &) = delete;
@@ -59,7 +59,7 @@ struct Query {
   Query(Query &&) = default;
   Query &operator=(Query &&) = default;
   ~Query() {
-    CHECK(todo.empty()) << "Query lost";
+    LOG_CHECK(todo.empty()) << "Query lost";
   }
   int next_pow() {
     CHECK(!todo.empty());
@@ -115,7 +115,7 @@ class QueryActor final : public Actor {
   explicit QueryActor(int threads_n) : threads_n_(threads_n) {
   }
 
-  void set_callback(std::unique_ptr<Callback> callback) {
+  void set_callback(unique_ptr<Callback> callback) {
     callback_ = std::move(callback);
   }
   void set_workers(std::vector<ActorId<Worker>> workers) {
@@ -129,7 +129,9 @@ class QueryActor final : public Actor {
       query.result = slow_pow_mod_uint32(x, p);
       callback_->on_result(std::move(query));
     } else {
-      auto future = send_promise(rand_elem(workers_), Random::fast(0, 3) == 0 ? 0 : Send::later, &Worker::query, x, p);
+      auto future = Random::fast(0, 3) == 0
+                        ? send_promise<ActorSendType::Immediate>(rand_elem(workers_), &Worker::query, x, p)
+                        : send_promise<ActorSendType::Later>(rand_elem(workers_), &Worker::query, x, p);
       if (future.is_ready()) {
         query.result = future.move_as_ok();
         callback_->on_result(std::move(query));
@@ -303,7 +305,8 @@ class SimpleActor final : public Actor {
     }
     q_++;
     p_ = Random::fast(0, 1) ? 1 : 10000;
-    auto future = send_promise(worker_, Random::fast(0, 3) == 0 ? 0 : Send::later, &Worker::query, q_, p_);
+    auto future = Random::fast(0, 3) == 0 ? send_promise<ActorSendType::Immediate>(worker_, &Worker::query, q_, p_)
+                                          : send_promise<ActorSendType::Later>(worker_, &Worker::query, q_, p_);
     if (future.is_ready()) {
       auto result = future.move_as_ok();
       CHECK(result == fast_pow_mod_uint32(q_, p_));
@@ -334,7 +337,7 @@ class SimpleActor final : public Actor {
   ActorId<Worker> worker_;
   FutureActor<uint32> future_;
   uint32 q_ = 1;
-  uint32 p_;
+  uint32 p_ = 0;
 };
 }  // namespace
 
@@ -397,7 +400,7 @@ TEST(Actors, send_to_dead) {
   int threads_n = 5;
   sched.init(threads_n);
 
-  sched.create_actor_unsafe<SendToDead>(0, "manager").release();
+  sched.create_actor_unsafe<SendToDead>(0, "SendToDead").release();
   sched.start();
   while (sched.run_main(10)) {
     // empty
@@ -406,7 +409,7 @@ TEST(Actors, send_to_dead) {
 }
 
 TEST(Actors, main_simple) {
-  SET_VERBOSITY_LEVEL(VERBOSITY_NAME(DEBUG));
+  SET_VERBOSITY_LEVEL(VERBOSITY_NAME(ERROR));
 
   ConcurrentScheduler sched;
   int threads_n = 3;
@@ -421,13 +424,13 @@ TEST(Actors, main_simple) {
 }
 
 TEST(Actors, main) {
-  SET_VERBOSITY_LEVEL(VERBOSITY_NAME(DEBUG));
+  SET_VERBOSITY_LEVEL(VERBOSITY_NAME(ERROR));
 
   ConcurrentScheduler sched;
   int threads_n = 9;
   sched.init(threads_n);
 
-  sched.create_actor_unsafe<MainQueryActor>(threads_n > 1 ? 1 : 0, "manager", threads_n).release();
+  sched.create_actor_unsafe<MainQueryActor>(threads_n > 1 ? 1 : 0, "MainQuery", threads_n).release();
   sched.start();
   while (sched.run_main(10)) {
     // empty
@@ -438,24 +441,24 @@ TEST(Actors, main) {
 class DoAfterStop : public Actor {
  public:
   void loop() override {
-    ptr = std::make_unique<int>(10);
+    ptr = make_unique<int>(10);
     stop();
     CHECK(*ptr == 10);
     Scheduler::instance()->finish();
   }
 
  private:
-  std::unique_ptr<int> ptr;
+  unique_ptr<int> ptr;
 };
 
 TEST(Actors, do_after_stop) {
-  SET_VERBOSITY_LEVEL(VERBOSITY_NAME(DEBUG));
+  SET_VERBOSITY_LEVEL(VERBOSITY_NAME(ERROR));
 
   ConcurrentScheduler sched;
   int threads_n = 0;
   sched.init(threads_n);
 
-  sched.create_actor_unsafe<DoAfterStop>(0, "manager").release();
+  sched.create_actor_unsafe<DoAfterStop>(0, "DoAfterStop").release();
   sched.start();
   while (sched.run_main(10)) {
     // empty

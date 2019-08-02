@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -50,16 +50,16 @@ class SqliteDb {
   Status exec(CSlice cmd) TD_WARN_UNUSED_RESULT;
   Result<bool> has_table(Slice table);
   Result<string> get_pragma(Slice name);
-  Status begin_transaction();
-  Status commit_transaction();
+  Status begin_transaction() TD_WARN_UNUSED_RESULT;
+  Status commit_transaction() TD_WARN_UNUSED_RESULT;
 
   Result<int32> user_version();
-  Status set_user_version(int32 version);
+  Status set_user_version(int32 version) TD_WARN_UNUSED_RESULT;
   void trace(bool flag);
 
   static Status destroy(Slice path) TD_WARN_UNUSED_RESULT;
 
-  // Anyway we can't change the key on the fly, so static functions is more than enough
+  // Anyway we can't change the key on the fly, so having static functions is more than enough
   static Result<SqliteDb> open_with_key(CSlice path, const DbKey &db_key);
   static Status change_key(CSlice path, const DbKey &new_db_key, const DbKey &old_db_key);
 
@@ -83,4 +83,5 @@ class SqliteDb {
 
   bool is_encrypted();
 };
+
 }  // namespace td

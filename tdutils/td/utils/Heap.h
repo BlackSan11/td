@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -7,9 +7,6 @@
 #pragma once
 
 #include "td/utils/common.h"
-#include "td/utils/logging.h"
-
-#include <algorithm>
 
 namespace td {
 
@@ -83,7 +80,7 @@ class KHeap {
   void check() const {
     for (size_t i = 0; i < array_.size(); i++) {
       for (size_t j = i * K + 1; j < i * K + 1 + K && j < array_.size(); j++) {
-        CHECK(array_[i].key_ <= array_[j].key_) << i << " " << j;
+        CHECK(array_[i].key_ <= array_[j].key_);
       }
     }
   }
@@ -119,7 +116,7 @@ class KHeap {
     auto item = array_[pos];
     while (true) {
       int left_pos = pos * K + 1;
-      int right_pos = std::min(left_pos + K, static_cast<int>(array_.size()));
+      int right_pos = min(left_pos + K, static_cast<int>(array_.size()));
       int next_pos = pos;
       KeyT next_key = item.key_;
       for (int i = left_pos; i < right_pos; i++) {

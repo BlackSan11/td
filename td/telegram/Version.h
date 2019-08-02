@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -23,6 +23,12 @@ enum class Version : int32 {
   FixPageBlockAudioEmptyFile,
   AddMessageInvoiceProviderData,
   AddCaptionEntities,
+  AddVenueType,
+  AddTermsOfService,
+  AddContactVcard,
+  AddMessageUnsupportedVersion,
+  SupportInstantView2_0,
+  AddNotificationGroupInfoMaxRemovedMessageId,
   Next
 };
 
@@ -33,10 +39,11 @@ enum class DbVersion : int32 {
   MessagesDbFts,
   MessagesCallIndex,
   FixFileRemoteLocationKeyBug,
+  AddNotificationsSupport,
   Next
 };
 
-inline int32 current_db_version() {
+inline constexpr int32 current_db_version() {
   return static_cast<int32>(DbVersion::Next) - 1;
 }
 

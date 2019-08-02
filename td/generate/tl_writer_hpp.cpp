@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -11,7 +11,11 @@
 namespace td {
 
 bool TD_TL_writer_hpp::is_documentation_generated() const {
+#ifdef DISABLE_HPP_DOCUMENTATION
+  return false;
+#else
   return true;
+#endif
 }
 
 int TD_TL_writer_hpp::get_additional_function_type(const std::string &additional_function_name) const {
@@ -37,11 +41,13 @@ std::string TD_TL_writer_hpp::gen_base_tl_class_name() const {
 std::string TD_TL_writer_hpp::gen_output_begin() const {
   return "#pragma once\n"
          "\n"
+#ifndef DISABLE_HPP_DOCUMENTATION
          "/**\n"
          " * \\file\n"
          " * Contains downcast_call methods for calling a function object on downcasted to\n"
          " * the most derived class TDLib API object.\n"
          " */\n"
+#endif
          "#include \"" +
          tl_name +
          ".h\"\n"
@@ -132,12 +138,13 @@ std::string TD_TL_writer_hpp::gen_function_result_type(const tl::tl_tree *result
 }
 
 std::string TD_TL_writer_hpp::gen_fetch_function_begin(const std::string &parser_name, const std::string &class_name,
-                                                       int arity, std::vector<tl::var_description> &vars,
-                                                       int parser_type) const {
+                                                       const std::string &parent_class_name, int arity,
+                                                       std::vector<tl::var_description> &vars, int parser_type) const {
   return "";
 }
 
-std::string TD_TL_writer_hpp::gen_fetch_function_end(int field_num, const std::vector<tl::var_description> &vars,
+std::string TD_TL_writer_hpp::gen_fetch_function_end(bool has_parent, int field_num,
+                                                     const std::vector<tl::var_description> &vars,
                                                      int parser_type) const {
   return "";
 }
@@ -195,17 +202,20 @@ std::string TD_TL_writer_hpp::gen_additional_proxy_function_begin(const std::str
                                                                   const std::string &class_name, int arity,
                                                                   bool is_function) const {
   assert(function_name == "downcast_call");
-  return "/**\n"
-         " * Calls the specified function object with the given object downcasted to its most derived type.\n"
-         " * \\param[in] obj Object to pass as an argument to the function object.\n"
-         " * \\param[in] func Function object to which the object will be passed.\n"
-         " * \\returns Whether function object call has happened. Should always return true for correct parameters.\n"
-         " */\n"
-         "template <class T>\n"
-         "bool downcast_call(" +
-         class_name +
-         " &obj, const T &func) {\n"
-         "  switch (obj.get_id()) {\n";
+  return
+#ifndef DISABLE_HPP_DOCUMENTATION
+      "/**\n"
+      " * Calls the specified function object with the given object downcasted to its most derived type.\n"
+      " * \\param[in] obj Object to pass as an argument to the function object.\n"
+      " * \\param[in] func Function object to which the object will be passed.\n"
+      " * \\returns Whether function object call has happened. Should always return true for correct parameters.\n"
+      " */\n"
+#endif
+      "template <class T>\n"
+      "bool downcast_call(" +
+      class_name +
+      " &obj, const T &func) {\n"
+      "  switch (obj.get_id()) {\n";
 }
 
 std::string TD_TL_writer_hpp::gen_additional_proxy_function_case(const std::string &function_name,

@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -11,7 +11,6 @@
 #include "td/utils/Slice.h"
 #include "td/utils/Status.h"
 
-#include <algorithm>
 #include <cstring>
 
 namespace td {
@@ -54,7 +53,7 @@ inline Result<size_t> BufferedReader::read(MutableSlice slice) {
   begin_pos_ = 0;
   end_pos_ = result;
 
-  size_t left = std::min(end_pos_, slice.size());
+  size_t left = min(end_pos_, slice.size());
   std::memcpy(slice.begin(), &buff_[begin_pos_], left);
   begin_pos_ += left;
   return left + available;

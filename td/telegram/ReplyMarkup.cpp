@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -13,7 +13,6 @@
 
 #include "td/utils/buffer.h"
 #include "td/utils/format.h"
-#include "td/utils/HttpUrl.h"
 #include "td/utils/logging.h"
 
 namespace td {
@@ -346,7 +345,7 @@ static Result<KeyboardButton> get_keyboard_button(tl_object_ptr<td_api::keyboard
 }
 
 static Result<InlineKeyboardButton> get_inline_keyboard_button(tl_object_ptr<td_api::inlineKeyboardButton> &&button,
-                                                               bool switch_inline_current_chat_buttons_allowed) {
+                                                               bool switch_inline_buttons_allowed) {
   CHECK(button != nullptr);
   if (!clean_input_string(button->text_)) {
     return Status::Error(400, "Keyboard button text must be encoded in UTF-8");
@@ -363,8 +362,8 @@ static Result<InlineKeyboardButton> get_inline_keyboard_button(tl_object_ptr<td_
   switch (button_type_id) {
     case td_api::inlineKeyboardButtonTypeUrl::ID: {
       current_button.type = InlineKeyboardButton::Type::Url;
-      TRY_RESULT(http_url, parse_url(static_cast<td_api::inlineKeyboardButtonTypeUrl *>(button->type_.get())->url_));
-      current_button.data = http_url.get_url();
+      TRY_RESULT(url, check_url(static_cast<td_api::inlineKeyboardButtonTypeUrl *>(button->type_.get())->url_));
+      current_button.data = std::move(url);
       if (!clean_input_string(current_button.data)) {
         return Status::Error(400, "Inline keyboard button url must be encoded in UTF-8");
       }
@@ -380,8 +379,12 @@ static Result<InlineKeyboardButton> get_inline_keyboard_button(tl_object_ptr<td_
       break;
     case td_api::inlineKeyboardButtonTypeSwitchInline::ID: {
       auto switch_inline_button = move_tl_object_as<td_api::inlineKeyboardButtonTypeSwitchInline>(button->type_);
-      if (!switch_inline_current_chat_buttons_allowed && switch_inline_button->in_current_chat_) {
-        return Status::Error(400, "Can't use switch_inline_query_current_chat in a channel chat");
+      if (!switch_inline_buttons_allowed) {
+        const char *button_name =
+            switch_inline_button->in_current_chat_ ? "switch_inline_query_current_chat" : "switch_inline_query";
+        return Status::Error(400, PSLICE() << "Can't use " << button_name
+                                           << " in a channel chat, because a user will not be able to use the button "
+                                              "without knowing bot's username");
       }
 
       current_button.type = switch_inline_button->in_current_chat_
@@ -405,7 +408,7 @@ static Result<InlineKeyboardButton> get_inline_keyboard_button(tl_object_ptr<td_
 
 Result<unique_ptr<ReplyMarkup>> get_reply_markup(tl_object_ptr<td_api::ReplyMarkup> &&reply_markup_ptr, bool is_bot,
                                                  bool only_inline_keyboard, bool request_buttons_allowed,
-                                                 bool switch_inline_current_chat_buttons_allowed) {
+                                                 bool switch_inline_buttons_allowed) {
   CHECK(!only_inline_keyboard || !request_buttons_allowed);
   if (reply_markup_ptr == nullptr || !is_bot) {
     return nullptr;
@@ -437,7 +440,7 @@ Result<unique_ptr<ReplyMarkup>> get_reply_markup(tl_object_ptr<td_api::ReplyMark
             continue;
           }
 
-          TRY_RESULT(current_button, get_keyboard_button(std::move(button), request_buttons_allowed))
+          TRY_RESULT(current_button, get_keyboard_button(std::move(button), request_buttons_allowed));
 
           row_buttons.push_back(std::move(current_button));
           row_button_count++;
@@ -474,8 +477,7 @@ Result<unique_ptr<ReplyMarkup>> get_reply_markup(tl_object_ptr<td_api::ReplyMark
             continue;
           }
 
-          TRY_RESULT(current_button,
-                     get_inline_keyboard_button(std::move(button), switch_inline_current_chat_buttons_allowed));
+          TRY_RESULT(current_button, get_inline_keyboard_button(std::move(button), switch_inline_buttons_allowed));
 
           row_buttons.push_back(std::move(current_button));
           row_button_count++;

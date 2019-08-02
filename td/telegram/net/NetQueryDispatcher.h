@@ -1,16 +1,20 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #pragma once
+
 #include "td/telegram/net/AuthDataShared.h"
+#include "td/telegram/net/DcId.h"
 #include "td/telegram/net/NetQuery.h"
 
 #include "td/actor/actor.h"
+#include "td/actor/PromiseFuture.h"
 
 #include "td/utils/common.h"
+#include "td/utils/ScopeGuard.h"
 #include "td/utils/Status.h"
 
 #include <array>
@@ -20,15 +24,13 @@
 #include <mutex>
 
 namespace td {
-class NetQueryDelayer;
-class DataCenter;
+
 class DcAuthManager;
-class SessionMultiProxy;
+class NetQueryDelayer;
 class PublicRsaKeyShared;
 class PublicRsaKeyWatchdog;
-}  // namespace td
+class SessionMultiProxy;
 
-namespace td {
 // Not just dispatcher.
 class NetQueryDispatcher {
  public:
@@ -45,17 +47,23 @@ class NetQueryDispatcher {
   void stop();
 
   void update_session_count();
+  void destroy_auth_keys(Promise<> promise);
   void update_use_pfs();
+  void update_mtproto_header();
+
   void update_valid_dc(DcId dc_id);
-  DcId main_dc_id() {
+
+  DcId main_dc_id() const {
     return DcId::internal(main_dc_id_.load());
   }
 
  private:
   std::atomic<bool> stop_flag_{false};
+  bool need_destroy_auth_key_{false};
   ActorOwn<NetQueryDelayer> delayer_;
   ActorOwn<DcAuthManager> dc_auth_manager_;
   struct Dc {
+    DcId id_;
     std::atomic<bool> is_valid_{false};
     std::atomic<bool> is_inited_{false};  // TODO: cache in scheduler local storage :D
 
@@ -74,6 +82,7 @@ class NetQueryDispatcher {
   std::shared_ptr<PublicRsaKeyShared> common_public_rsa_key_;
   ActorOwn<PublicRsaKeyWatchdog> public_rsa_key_watchdog_;
   std::mutex main_dc_id_mutex_;
+  std::shared_ptr<Guard> td_guard_;
 
   Status wait_dc_init(DcId dc_id, bool force);
   bool is_dc_inited(int32 raw_dc_id);
@@ -81,6 +90,9 @@ class NetQueryDispatcher {
   static int32 get_session_count();
   static bool get_use_pfs();
 
+  static void complete_net_query(NetQueryPtr net_query);
+
   void try_fix_migrate(NetQueryPtr &net_query);
 };
+
 }  // namespace td

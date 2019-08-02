@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -107,8 +107,8 @@ BENCH(ThreadNew, "new struct then delete in several threads") {
   tb.join();
 }
 #endif
-
-// Too hard for android clang (?)
+/*
+// Too hard for clang (?)
 BENCH(Time, "Clocks::monotonic") {
   double res = 0;
   for (int i = 0; i < n; i++) {
@@ -116,30 +116,29 @@ BENCH(Time, "Clocks::monotonic") {
   }
   do_not_optimize_away(res);
 }
-
+*/
 #if !TD_WINDOWS
 class PipeBench : public Benchmark {
  public:
   int p[2];
-
-  PipeBench() {
-    pipe(p);
-  }
 
   string get_description() const override {
     return "pipe write + read int32";
   }
 
   void start_up() override {
-    pipe(p);
+    int res = pipe(p);
+    CHECK(res == 0);
   }
 
   void run(int n) override {
     int res = 0;
     for (int i = 0; i < n; i++) {
       int val = 1;
-      write(p[1], &val, sizeof(val));
-      read(p[0], &val, sizeof(val));
+      auto write_len = write(p[1], &val, sizeof(val));
+      CHECK(write_len == sizeof(val));
+      auto read_len = read(p[0], &val, sizeof(val));
+      CHECK(read_len == sizeof(val));
       res += val;
     }
     do_not_optimize_away(res);
@@ -219,19 +218,22 @@ class CreateFileBench : public Benchmark {
   }
   void run(int n) override {
     for (int i = 0; i < n; i++) {
-      FileFd::open("A/" + to_string(i), FileFd::Flags::Write | FileFd::Flags::Create).move_as_ok().close();
+      FileFd::open(PSLICE() << "A/" << i, FileFd::Flags::Write | FileFd::Flags::Create).move_as_ok().close();
     }
   }
   void tear_down() override {
-    auto status = td::walk_path("A/", [&](CSlice path, bool is_dir) {
-      if (is_dir) {
-        rmdir(path).ignore();
-      } else {
-        unlink(path).ignore();
-      }
-    });
+    td::walk_path("A/",
+                  [&](CSlice path, bool is_dir) {
+                    if (is_dir) {
+                      rmdir(path).ignore();
+                    } else {
+                      unlink(path).ignore();
+                    }
+                  })
+        .ignore();
   }
 };
+
 class WalkPathBench : public Benchmark {
   string get_description() const override {
     return "walk_path";
@@ -239,24 +241,28 @@ class WalkPathBench : public Benchmark {
   void start_up_n(int n) override {
     mkdir("A").ensure();
     for (int i = 0; i < n; i++) {
-      FileFd::open("A/" + to_string(i), FileFd::Flags::Write | FileFd::Flags::Create).move_as_ok().close();
+      FileFd::open(PSLICE() << "A/" << i, FileFd::Flags::Write | FileFd::Flags::Create).move_as_ok().close();
     }
   }
   void run(int n) override {
     int cnt = 0;
-    auto status = td::walk_path("A/", [&](CSlice path, bool is_dir) {
-      stat(path).ok();
-      cnt++;
-    });
+    td::walk_path("A/",
+                  [&](CSlice path, bool is_dir) {
+                    stat(path).ok();
+                    cnt++;
+                  })
+        .ignore();
   }
   void tear_down() override {
-    auto status = td::walk_path("A/", [&](CSlice path, bool is_dir) {
-      if (is_dir) {
-        rmdir(path).ignore();
-      } else {
-        unlink(path).ignore();
-      }
-    });
+    td::walk_path("A/",
+                  [&](CSlice path, bool is_dir) {
+                    if (is_dir) {
+                      rmdir(path).ignore();
+                    } else {
+                      unlink(path).ignore();
+                    }
+                  })
+        .ignore();
   }
 };
 

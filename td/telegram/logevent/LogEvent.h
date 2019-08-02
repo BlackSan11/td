@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -10,11 +10,12 @@
 #include "td/telegram/Version.h"
 
 #include "td/utils/buffer.h"
+#include "td/utils/common.h"
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Status.h"
-#include "td/utils/Storer.h"
+#include "td/utils/StorerBase.h"
 #include "td/utils/StringBuilder.h"
 #include "td/utils/tl_helpers.h"
 #include "td/utils/tl_parsers.h"
@@ -37,7 +38,7 @@ class WithVersion : public ParentT {
   }
 
  private:
-  int32 version_;
+  int32 version_{};
 };
 
 template <class ParentT, class ContextT>
@@ -52,7 +53,7 @@ class WithContext : public ParentT {
   }
 
  private:
-  ContextT context_;
+  ContextT context_{};
 };
 
 class LogEvent {
@@ -68,6 +69,8 @@ class LogEvent {
     Channels = 4,
     SecretChatInfos = 5,
     WebPages = 0x10,
+    SetPollAnswer = 0x20,
+    StopPoll = 0x21,
     SendMessage = 0x100,
     DeleteMessage = 0x101,
     DeleteMessagesFromServer = 0x102,
@@ -83,7 +86,16 @@ class LogEvent {
     ToggleDialogIsPinnedOnServer = 0x10c,
     ReorderPinnedDialogsOnServer = 0x10d,
     SaveDialogDraftMessageOnServer = 0x10e,
+    UpdateDialogNotificationSettingsOnServer = 0x10f,
+    UpdateScopeNotificationSettingsOnServer = 0x110,
+    ResetAllNotificationSettingsOnServer = 0x111,
+    ChangeDialogReportSpamStateOnServer = 0x112,
+    GetDialogFromServer = 0x113,
+    ReadHistoryInSecretChat = 0x114,
+    ToggleDialogIsMarkedAsUnreadOnServer = 0x115,
     GetChannelDifference = 0x140,
+    AddMessagePushNotification = 0x200,
+    EditMessagePushNotification = 0x201,
     ConfigPmcMagic = 0x1f18,
     BinlogPmcMagic = 0x4327
   };
@@ -102,7 +114,7 @@ class LogEvent {
   }
 
  private:
-  Id logevent_id_;
+  Id logevent_id_{};
 };
 inline StringBuilder &operator<<(StringBuilder &sb, const LogEvent &log_event) {
   return log_event.print(sb);
@@ -122,13 +134,13 @@ void store(const EventT &event, StorerT &storer) {
 }
 
 template <class DestT, class T>
-Result<std::unique_ptr<DestT>> from_parser(T &&parser) {
+Result<unique_ptr<DestT>> from_parser(T &&parser) {
   auto version = parser.fetch_int();
   parser.set_version(version);
   parser.set_context(G());
   auto magic = static_cast<typename DestT::Type>(parser.fetch_int());
 
-  std::unique_ptr<DestT> event;
+  unique_ptr<DestT> event;
   DestT::downcast_call(magic, [&](auto *ptr) {
     auto tmp = make_unique<std::decay_t<decltype(*ptr)>>();
     tmp->parse(parser);
@@ -143,7 +155,7 @@ Result<std::unique_ptr<DestT>> from_parser(T &&parser) {
 }
 
 template <class DestT>
-Result<std::unique_ptr<DestT>> from_buffer_slice(BufferSlice slice) {
+Result<unique_ptr<DestT>> from_buffer_slice(BufferSlice slice) {
   return from_parser<DestT>(WithVersion<WithContext<TlBufferParser, Global *>>{&slice});
 }
 
@@ -162,20 +174,20 @@ class StorerImpl : public Storer {
     td::store(event_, storer);
     return storer.get_length();
   }
-  size_t store(uint8 *ptr_x) const override {
-    char *ptr = reinterpret_cast<char *>(ptr_x);
+  size_t store(uint8 *ptr) const override {
     WithContext<TlStorerUnsafe, Global *> storer(ptr);
     storer.set_context(G());
 
     storer.store_int(T::version());
     td::store(magic(event_), storer);
     td::store(event_, storer);
-    return storer.get_buf() - ptr;
+    return static_cast<size_t>(storer.get_buf() - ptr);
   }
 
  private:
   const T &event_;
 };
+
 }  // namespace detail
 
 template <class ChildT>
@@ -185,20 +197,8 @@ class LogEventBase : public LogEvent {
   void store(StorerT &storer) const {
     detail::store(static_cast<const ChildT &>(*this), storer);
   }
-  static Result<std::unique_ptr<ChildT>> from_buffer_slice(BufferSlice slice) {
+  static Result<unique_ptr<ChildT>> from_buffer_slice(BufferSlice slice) {
     return detail::from_buffer_slice<ChildT>(std::move(slice));
-  }
-};
-
-template <class ChildT, class ParentT>
-class LogEventHelper : public ParentT {
- public:
-  typename ParentT::Type get_type() const override {
-    return ChildT::type;
-  }
-
-  constexpr int32 magic() const {
-    return static_cast<int32>(get_type());
   }
 };
 
@@ -206,7 +206,7 @@ class LogEventParser : public WithVersion<WithContext<TlParser, Global *>> {
  public:
   explicit LogEventParser(Slice data) : WithVersion<WithContext<TlParser, Global *>>(data) {
     set_version(fetch_int());
-    CHECK(version() < static_cast<int32>(Version::Next)) << "Wrong version " << version();
+    LOG_CHECK(version() < static_cast<int32>(Version::Next)) << "Wrong version " << version();
     set_context(G());
   }
 };
@@ -221,7 +221,7 @@ class LogEventStorerCalcLength : public WithContext<TlStorerCalcLength, Global *
 
 class LogEventStorerUnsafe : public WithContext<TlStorerUnsafe, Global *> {
  public:
-  explicit LogEventStorerUnsafe(char *buf) : WithContext<TlStorerUnsafe, Global *>(buf) {
+  explicit LogEventStorerUnsafe(unsigned char *buf) : WithContext<TlStorerUnsafe, Global *>(buf) {
     store_int(static_cast<int32>(Version::Next) - 1);
     set_context(G());
   }
@@ -256,15 +256,14 @@ class LogEventStorerImpl : public Storer {
     td::store(event_, storer);
     return storer.get_length();
   }
-  size_t store(uint8 *ptr_x) const override {
-    char *ptr = reinterpret_cast<char *>(ptr_x);
+  size_t store(uint8 *ptr) const override {
     LogEventStorerUnsafe storer(ptr);
     td::store(event_, storer);
 #ifdef TD_DEBUG
     T check_result;
     log_event_parse(check_result, Slice(ptr, storer.get_buf())).ensure();
 #endif
-    return storer.get_buf() - ptr;
+    return static_cast<size_t>(storer.get_buf() - ptr);
   }
 
  private:
@@ -278,7 +277,7 @@ BufferSlice log_event_store(const T &data) {
 
   BufferSlice value_buffer{storer_calc_length.get_length()};
 
-  LogEventStorerUnsafe storer_unsafe(value_buffer.as_slice().begin());
+  LogEventStorerUnsafe storer_unsafe(value_buffer.as_slice().ubegin());
   store(data, storer_unsafe);
 
 #ifdef TD_DEBUG

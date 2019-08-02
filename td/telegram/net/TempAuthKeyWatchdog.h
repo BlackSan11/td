@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -19,10 +19,10 @@
 #include "td/utils/logging.h"
 #include "td/utils/Time.h"
 
-#include <algorithm>
 #include <map>
 
 namespace td {
+
 class TempAuthKeyWatchdog : public NetQueryCallback {
   class RegisteredAuthKeyImpl {
    public:
@@ -43,11 +43,11 @@ class TempAuthKeyWatchdog : public NetQueryCallback {
   };
 
  public:
-  using RegisteredAuthKey = std::unique_ptr<RegisteredAuthKeyImpl>;
+  using RegisteredAuthKey = unique_ptr<RegisteredAuthKeyImpl>;
 
   static RegisteredAuthKey register_auth_key_id(int64 id) {
     send_closure(G()->temp_auth_key_watchdog(), &TempAuthKeyWatchdog::register_auth_key_id_impl, id);
-    return std::make_unique<RegisteredAuthKeyImpl>(id);
+    return make_unique<RegisteredAuthKeyImpl>(id);
   }
 
  private:
@@ -76,7 +76,7 @@ class TempAuthKeyWatchdog : public NetQueryCallback {
   void need_sync() {
     need_sync_ = true;
     try_sync();
-    LOG(DEBUG) << "need sync";
+    LOG(DEBUG) << "Need sync temp auth keys";
   }
 
   void try_sync() {
@@ -88,12 +88,12 @@ class TempAuthKeyWatchdog : public NetQueryCallback {
     if (sync_at_ == 0) {
       sync_at_ = now + SYNC_WAIT_MAX;
     }
-    LOG(DEBUG) << "set timeout";
-    set_timeout_at(std::min(sync_at_, now + SYNC_WAIT));
+    LOG(DEBUG) << "Set sync timeout";
+    set_timeout_at(min(sync_at_, now + SYNC_WAIT));
   }
 
   void timeout_expired() override {
-    LOG(DEBUG) << "timeout expired";
+    LOG(DEBUG) << "Sync timeout expired";
     CHECK(!run_sync_);
     if (!need_sync_) {
       LOG(ERROR) << "Do not need sync..";
@@ -117,12 +117,16 @@ class TempAuthKeyWatchdog : public NetQueryCallback {
   void on_result(NetQueryPtr query) final {
     run_sync_ = false;
     if (query->is_error()) {
-      LOG(ERROR) << "auth_dropTempAuthKeys failed " << query->error();
+      if (G()->close_flag()) {
+        return;
+      }
+      LOG(ERROR) << "Receive error for auth_dropTempAuthKeys: " << query->error();
       need_sync_ = true;
     } else {
-      LOG(INFO) << "auth_dropTempAuthKeys OK";
+      LOG(INFO) << "Receive OK for auth_dropTempAuthKeys";
     }
     try_sync();
   }
 };
+
 }  // namespace td

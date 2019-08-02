@@ -1,18 +1,21 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #pragma once
 
+#include "td/telegram/net/DcId.h"
 #include "td/telegram/net/DcOptions.h"
 #include "td/telegram/net/NetQuery.h"
 
 #include "td/telegram/telegram_api.h"
 
 #include "td/actor/actor.h"
+#include "td/actor/PromiseFuture.h"
 
+#include "td/utils/logging.h"
 #include "td/utils/port/IPAddress.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Status.h"
@@ -20,17 +23,23 @@
 
 namespace td {
 
+extern int VERBOSITY_NAME(config_recoverer);
+
+class ConfigShared;
+
 using SimpleConfig = tl_object_ptr<telegram_api::help_configSimple>;
 
 Result<SimpleConfig> decode_config(Slice input);
 
-ActorOwn<> get_simple_config_google_app(Promise<SimpleConfig> promise, bool is_test = false, int32 scheduler_id = -1);
+ActorOwn<> get_simple_config_azure(Promise<SimpleConfig> promise, const ConfigShared *shared_config, bool is_test,
+                                   int32 scheduler_id);
 
-ActorOwn<> get_simple_config_google_dns(Promise<SimpleConfig> promise, bool is_test = false, int32 scheduler_id = -1);
+ActorOwn<> get_simple_config_google_dns(Promise<SimpleConfig> promise, const ConfigShared *shared_config, bool is_test,
+                                        int32 scheduler_id);
 
 using FullConfig = tl_object_ptr<telegram_api::config>;
 
-ActorOwn<> get_full_config(IPAddress ip_address, Promise<FullConfig> promise);
+ActorOwn<> get_full_config(DcId dc_id, IPAddress ip_address, Promise<FullConfig> promise);
 
 class ConfigRecoverer;
 class ConfigManager : public NetQueryCallback {
@@ -46,7 +55,7 @@ class ConfigManager : public NetQueryCallback {
   int32 config_sent_cnt_{0};
   ActorOwn<ConfigRecoverer> config_recoverer_;
   int ref_cnt_{1};
-  Timestamp expire_;
+  Timestamp expire_time_;
 
   void start_up() override;
   void hangup_shared() override;
@@ -59,9 +68,10 @@ class ConfigManager : public NetQueryCallback {
   void request_config_from_dc_impl(DcId dc_id);
   void process_config(tl_object_ptr<telegram_api::config> config);
 
-  Timestamp load_config_expire();
+  Timestamp load_config_expire_time();
   void save_config_expire(Timestamp timestamp);
   void save_dc_options_update(DcOptions dc_options);
   DcOptions load_dc_options_update();
 };
+
 }  // namespace td

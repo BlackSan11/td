@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -9,6 +9,8 @@
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
 #include "td/utils/tests.h"
+
+#include <algorithm>
 
 REGISTER_TESTS(message_entities);
 
@@ -39,9 +41,9 @@ TEST(MessageEntities, mention) {
   check_mention("@abcdefghijklmnopqrstuvwxyz123456", {"@abcdefghijklmnopqrstuvwxyz123456"});
   check_mention("@abcdefghijklmnopqrstuvwxyz1234567", {});
   check_mention("нет@mention", {});
-  check_mention("@ya @gif @wiki @vid @bing @pic @bold @imdb @coub @like @vote @giff @cap ya cap @y @yar @bingg @bin",
-                {"@ya", "@gif", "@wiki", "@vid", "@bing", "@pic", "@bold", "@imdb", "@coub", "@like", "@vote", "@giff",
-                 "@cap", "@bingg"});
+  check_mention(
+      "@ya @gif @wiki @vid @bing @pic @bold @imdb @coub @like @vote @giff @cap ya cap @y @yar @bingg @bin",
+      {"@ya", "@gif", "@wiki", "@vid", "@bing", "@pic", "@bold", "@imdb", "@coub", "@like", "@vote", "@bingg"});
 };
 
 static void check_bot_command(string str, std::vector<string> expected) {
@@ -109,6 +111,58 @@ TEST(MessageEntities, hashtag) {
   check_hashtag(u8"#a\u2122", {"#a"});
 }
 
+static void check_cashtag(string str, std::vector<string> expected) {
+  auto result_slice = find_cashtags(str);
+  std::vector<string> result;
+  for (auto &it : result_slice) {
+    result.push_back(it.str());
+  }
+  if (result != expected) {
+    LOG(FATAL) << tag("text", str) << tag("got", format::as_array(result))
+               << tag("expected", format::as_array(expected));
+  }
+}
+
+TEST(MessageEntities, cashtag) {
+  check_cashtag("", {});
+  check_cashtag("$", {});
+  check_cashtag("$$", {});
+  check_cashtag("$$$", {});
+  check_cashtag("$a", {});
+  check_cashtag(" $a", {});
+  check_cashtag("$a ", {});
+  check_cashtag(" $я ", {});
+  check_cashtag("$ab", {});
+  check_cashtag("$abc", {});
+  check_cashtag("$", {});
+  check_cashtag("$A", {});
+  check_cashtag("$AB", {});
+  check_cashtag("$АBC", {});
+  check_cashtag("$АВС", {});
+  check_cashtag("$ABC", {"$ABC"});
+  check_cashtag("$ABCD", {"$ABCD"});
+  check_cashtag("$ABCDE", {"$ABCDE"});
+  check_cashtag("$ABCDEF", {"$ABCDEF"});
+  check_cashtag("$ABCDEFG", {"$ABCDEFG"});
+  check_cashtag("$ABCDEFGH", {"$ABCDEFGH"});
+  check_cashtag("$ABCDEFGHJ", {});
+  check_cashtag("$ABCDEFGH1", {});
+  check_cashtag(" $XYZ", {"$XYZ"});
+  check_cashtag("$XYZ ", {"$XYZ"});
+  check_cashtag(" $XYZ ", {"$XYZ"});
+  check_cashtag(" $$XYZ ", {});
+  check_cashtag(" $XYZ$ ", {});
+  check_cashtag(" $ABC1 ", {});
+  check_cashtag(" $1ABC ", {});
+  check_cashtag(" 1$ABC ", {});
+  check_cashtag(" А$ABC ", {});
+  check_cashtag("$ABC$DEF $GHI $KLM", {"$GHI", "$KLM"});
+  check_cashtag("$TEST", {"$TEST"});
+  check_cashtag(u8"$ABC\u2122", {"$ABC"});
+  check_cashtag(u8"\u2122$ABC", {"$ABC"});
+  check_cashtag(u8"\u2122$ABC\u2122", {"$ABC"});
+}
+
 static void check_is_email_address(string str, bool expected) {
   bool result = is_email_address(str);
   LOG_IF(FATAL, result != expected) << "Expected " << expected << " as result of is_email_address(" << str << ")";
@@ -123,11 +177,11 @@ TEST(MessageEntities, is_email_address) {
   check_is_email_address("A@a.a.a.ab", true);
   check_is_email_address("A@a.ab", true);
   check_is_email_address("Test@aa.aa.aa.aa", true);
-  check_is_email_address("Test@test.abc", true);
+  check_is_email_address("Test@test.abd", true);
   check_is_email_address("a@a.a.a.ab", true);
-  check_is_email_address("test@test.abc", true);
+  check_is_email_address("test@test.abd", true);
   check_is_email_address("test@test.com", true);
-  check_is_email_address("test.abc", false);
+  check_is_email_address("test.abd", false);
   check_is_email_address("a.ab", false);
   check_is_email_address("a.bc@d.ef", true);
 
@@ -308,7 +362,7 @@ TEST(MessageEntities, url) {
   check_url("http://a.0", {});
   check_url("http://a.a", {});
   check_url("google.com:1#ab c", {"google.com:1#ab"});
-  check_url("google.com:1#", {"google.com:1#"});
+  check_url("google.com:1#", {"google.com:1"});
   check_url("google.com:1#1", {"google.com:1#1"});
   check_url("google.com:00000001/abs", {"google.com:00000001/abs"});
   check_url("google.com:000000065535/abs", {"google.com:000000065535/abs"});
@@ -331,7 +385,7 @@ TEST(MessageEntities, url) {
   check_url("1.0", {});
   check_url("www.🤙.tk", {"www.🤙.tk"});
   check_url("a.ab", {});
-  check_url("test.abc", {});
+  check_url("test.abd", {});
   check_url("ТеСт.Москва", {});
   check_url("ТеСт.МоСкВΑ", {});
   check_url("ТеСт.МоСкВа", {"ТеСт.МоСкВа"});
@@ -350,12 +404,13 @@ TEST(MessageEntities, url) {
   check_url("http://google_.com", {});
   check_url("http://google._com_", {});
   check_url("http://[2001:4860:0:2001::68]/", {});  // TODO
-  check_url("test.abc", {});
+  check_url("test.abd", {});
   check_url("/.b/..a    @.....@/. a.ba", {"a.ba"});
   check_url("bbbbbbbbbbbbbb.@.@", {});
   check_url("http://google.com/", {"http://google.com/"});
   check_url("http://google.com?", {"http://google.com"});
-  check_url("http://google.com#", {"http://google.com#"});
+  check_url("http://google.com#", {"http://google.com"});
+  check_url("http://google.com##", {"http://google.com##"});
   check_url("http://google.com/?", {"http://google.com/"});
   check_url("https://www.google.com/ab,", {"https://www.google.com/ab"});
   check_url("@.", {});
@@ -417,7 +472,7 @@ TEST(MessageEntities, url) {
        "google.com/",
        "google.com/#",
        "google.com",
-       "google.com#"});
+       "google.com"});
   check_url("https://t.…", {});
   check_url("('http://telegram.org/a-b/?br=ie&lang=en',)", {"http://telegram.org/a-b/?br=ie&lang=en"});
   check_url("https://ai.telegram.org/bot%20bot/test-...", {"https://ai.telegram.org/bot%20bot/test-"});
@@ -463,8 +518,9 @@ TEST(MessageEntities, url) {
   check_url("<http://www.ics.uci.edu/pub/ietf/uri/historical.html#WARNING>",
             {"http://www.ics.uci.edu/pub/ietf/uri/historical.html#WARNING"});
   check_url("Look :test@example.com", {":test@example.com"}, {});  // TODO {}, {"test@example.com"}
+  check_url("Look mailto:test@example.com", {}, {"test@example.com"});
   check_url("http://test.com#a", {"http://test.com#a"});
-  check_url("http://test.com#", {"http://test.com#"});
+  check_url("http://test.com#", {"http://test.com"});
   check_url("http://test.com?#", {"http://test.com?#"});
   check_url("http://test.com/?#", {"http://test.com/?#"});
   check_url("https://t.me/abcdef…", {"https://t.me/abcdef"});
@@ -474,4 +530,177 @@ TEST(MessageEntities, url) {
   check_url("https://t…", {});
   check_url("👉http://ab.com/cdefgh-1IJ", {"http://ab.com/cdefgh-1IJ"});
   check_url("...👉http://ab.com/cdefgh-1IJ", {});  // TODO
+}
+
+static void check_fix_formatted_text(string str, vector<MessageEntity> entities, string expected_str,
+                                     vector<MessageEntity> expected_entities, bool allow_empty, bool skip_new_entities,
+                                     bool skip_bot_commands, bool for_draft) {
+  ASSERT_TRUE(fix_formatted_text(str, entities, allow_empty, skip_new_entities, skip_bot_commands, for_draft).is_ok());
+  ASSERT_STREQ(expected_str, str);
+  ASSERT_EQ(expected_entities, entities);
+}
+
+static void check_fix_formatted_text(string str, vector<MessageEntity> entities, bool allow_empty,
+                                     bool skip_new_entities, bool skip_bot_commands, bool for_draft) {
+  ASSERT_TRUE(
+      fix_formatted_text(str, entities, allow_empty, skip_new_entities, skip_bot_commands, for_draft).is_error());
+}
+
+TEST(MessageEntities, fix_formatted_text) {
+  string str;
+  string fixed_str;
+  for (auto i = 0; i <= 32; i++) {
+    str += static_cast<char>(i);
+    if (i != 13) {
+      if (i != 10) {
+        fixed_str += ' ';
+      } else {
+        fixed_str += str.back();
+      }
+    }
+  }
+
+  check_fix_formatted_text(str, {}, "", {}, true, true, true, true);
+  check_fix_formatted_text(str, {}, "", {}, true, true, false, true);
+  check_fix_formatted_text(str, {}, "", {}, true, false, true, true);
+  check_fix_formatted_text(str, {}, "", {}, true, false, false, true);
+  check_fix_formatted_text(str, {}, "", {}, true, false, false, false);
+  check_fix_formatted_text(str, {}, false, false, false, false);
+  check_fix_formatted_text(str, {}, false, false, false, true);
+
+  str += "a  \r\n  ";
+  fixed_str += "a  \n  ";
+
+  for (int32 i = 33; i <= 35; i++) {
+    vector<MessageEntity> entities;
+    entities.emplace_back(MessageEntity::Type::Bold, 0, i);
+
+    vector<MessageEntity> fixed_entities;
+    if (i != 33) {
+      fixed_entities = entities;
+      fixed_entities.back().length = i - 1;
+    }
+    check_fix_formatted_text(str, entities, fixed_str, fixed_entities, true, false, false, true);
+
+    string expected_str;
+    if (i != 33) {
+      fixed_entities = entities;
+      fixed_entities.back().length = 33;
+      expected_str = fixed_str.substr(0, 33);
+    } else {
+      fixed_entities.clear();
+      expected_str = "a";
+    }
+    check_fix_formatted_text(str, entities, expected_str, fixed_entities, false, false, false, false);
+  }
+
+  str = "👉 👉";
+  for (int i = 0; i < 10; i++) {
+    vector<MessageEntity> entities;
+    entities.emplace_back(MessageEntity::Type::Bold, i, 1);
+    if (i == 0 || i == 1 || i == 3 || i == 4) {
+      check_fix_formatted_text(str, entities, true, true, true, true);
+      check_fix_formatted_text(str, entities, false, false, false, false);
+    } else {
+      check_fix_formatted_text(str, entities, str, {}, true, true, true, true);
+      check_fix_formatted_text(str, entities, str, {}, false, false, false, false);
+    }
+  }
+
+  str = "  /test @abaca #ORD $ABC  telegram.org ";
+  for (auto for_draft : {false, true}) {
+    int32 shift = for_draft ? 2 : 0;
+    string expected_str = for_draft ? str : str.substr(2, str.size() - 3);
+
+    for (auto skip_new_entities : {false, true}) {
+      for (auto skip_bot_commands : {false, true}) {
+        vector<MessageEntity> entities;
+        if (!skip_new_entities) {
+          if (!skip_bot_commands) {
+            entities.emplace_back(MessageEntity::Type::BotCommand, shift, 5);
+          }
+          entities.emplace_back(MessageEntity::Type::Mention, shift + 6, 6);
+          entities.emplace_back(MessageEntity::Type::Hashtag, shift + 13, 4);
+          entities.emplace_back(MessageEntity::Type::Cashtag, shift + 18, 4);
+          entities.emplace_back(MessageEntity::Type::Url, shift + 24, 12);
+        }
+
+        check_fix_formatted_text(str, {}, expected_str, entities, true, skip_new_entities, skip_bot_commands,
+                                 for_draft);
+        check_fix_formatted_text(str, {}, expected_str, entities, false, skip_new_entities, skip_bot_commands,
+                                 for_draft);
+      }
+    }
+  }
+
+  str = "aba \r\n caba ";
+  for (int32 length = 1; length <= 3; length++) {
+    for (int32 offset = 0; static_cast<size_t>(offset + length) <= str.size(); offset++) {
+      for (auto type : {MessageEntity::Type::Bold, MessageEntity::Type::Url, MessageEntity::Type::TextUrl,
+                        MessageEntity::Type::MentionName}) {
+        for (auto for_draft : {false, true}) {
+          fixed_str = for_draft ? "aba \n caba " : "aba \n caba";
+          auto fixed_length = offset <= 4 && offset + length >= 5 ? length - 1 : length;
+          auto fixed_offset = offset >= 5 ? offset - 1 : offset;
+          if (static_cast<size_t>(fixed_offset) >= fixed_str.size()) {
+            fixed_length = 0;
+          }
+          while (static_cast<size_t>(fixed_offset + fixed_length) > fixed_str.size()) {
+            fixed_length--;
+          }
+
+          vector<MessageEntity> entities;
+          entities.emplace_back(type, offset, length);
+          vector<MessageEntity> fixed_entities;
+          if (fixed_length > 0) {
+            for (auto i = 0; i < length; i++) {
+              if (str[offset + i] != '\r' && str[offset + i] != '\n' &&
+                  (str[offset + i] != ' ' || type == MessageEntity::Type::TextUrl ||
+                   type == MessageEntity::Type::MentionName)) {
+                fixed_entities.emplace_back(type, fixed_offset, fixed_length);
+                break;
+              }
+            }
+          }
+          check_fix_formatted_text(str, entities, fixed_str, fixed_entities, true, false, false, for_draft);
+        }
+      }
+    }
+  }
+
+  str = "aba caba";
+  for (int32 length = -10; length <= 10; length++) {
+    for (int32 offset = -10; offset <= 10; offset++) {
+      vector<MessageEntity> entities;
+      entities.emplace_back(MessageEntity::Type::Bold, offset, length);
+      vector<MessageEntity> fixed_entities;
+      if (length > 0 && offset >= 0 && static_cast<size_t>(length + offset) <= str.size() &&
+          (length >= 2 || offset != 3)) {
+        fixed_entities.emplace_back(MessageEntity::Type::Bold, offset, length);
+      }
+      check_fix_formatted_text(str, entities, str, fixed_entities, true, false, false, false);
+      check_fix_formatted_text(str, entities, str, fixed_entities, false, false, false, true);
+    }
+  }
+
+  str = "aba caba";
+  for (int32 length = 1; length <= 7; length++) {
+    for (int32 offset = 0; offset <= 8 - length; offset++) {
+      for (int32 length2 = 1; length2 <= 7; length2++) {
+        for (int32 offset2 = 0; offset2 <= 8 - length2; offset2++) {
+          if (offset != offset2) {
+            vector<MessageEntity> entities;
+            entities.emplace_back(MessageEntity::Type::TextUrl, offset, length);
+            entities.emplace_back(MessageEntity::Type::TextUrl, offset2, length2);
+            vector<MessageEntity> fixed_entities = entities;
+            std::sort(fixed_entities.begin(), fixed_entities.end());
+            if (fixed_entities[0].offset + fixed_entities[0].length > fixed_entities[1].offset) {
+              fixed_entities.pop_back();
+            }
+            check_fix_formatted_text(str, entities, str, fixed_entities, false, false, false, false);
+          }
+        }
+      }
+    }
+  }
 }

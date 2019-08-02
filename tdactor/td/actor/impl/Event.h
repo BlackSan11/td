@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -241,7 +241,9 @@ class Event {
     }
   }
 };
+
 inline StringBuilder &operator<<(StringBuilder &sb, const Event &e) {
   return sb << tag("Event", static_cast<int32>(e.type));
 }
+
 }  // namespace td

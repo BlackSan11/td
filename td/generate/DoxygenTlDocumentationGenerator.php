@@ -43,7 +43,7 @@ class DoxygenTlDocumentationGenerator extends TlDocumentationGenerator
         return $doc;
     }
 
-    protected function getFieldName($name)
+    protected function getFieldName($name, $class_name)
     {
         if (substr($name, 0, 6) === 'param_') {
             $name = substr($name, 6);
@@ -53,7 +53,7 @@ class DoxygenTlDocumentationGenerator extends TlDocumentationGenerator
 
     protected function getClassName($type)
     {
-        return implode(explode('.', trim($type, "\n ;")));
+        return implode(explode('.', trim($type, "\r\n ;")));
     }
 
     protected function getTypeName($type)
@@ -115,11 +115,11 @@ class DoxygenTlDocumentationGenerator extends TlDocumentationGenerator
     protected function needSkipLine($line)
     {
         $tline = trim($line);
-        return empty($tline) || $tline[0] == '}' || $tline == 'public:' || strpos($line, '#pragma ') === 0 ||
+        return empty($tline) || $tline[0] === '}' || $tline === 'public:' || strpos($line, '#pragma ') === 0 ||
             strpos($line, '#include <') === 0 || strpos($tline, 'return ') === 0 || strpos($tline, 'namespace') === 0 ||
             preg_match('/class [A-Za-z0-9_]*;/', $line) || $tline === 'if (value == nullptr) {' ||
             strpos($line, 'JNIEnv') || strpos($line, 'jfieldID') || $tline === 'virtual ~Object() {' ||
-            $tline == 'virtual void store(TlStorerToString &s, const char *field_name) const = 0;';
+            $tline === 'virtual void store(TlStorerToString &s, const char *field_name) const = 0;';
     }
 
     protected function isHeaderLine($line)
@@ -196,7 +196,7 @@ EOT
         $this->addDocumentation('object_ptr<ToType> move_object_as(FromType &&from) {', <<<EOT
 /**
  * A function to cast a wrapped in td::td_api::object_ptr TDLib API object to its subclass or superclass.
- * Casting an object to an incorrect type will lead to undefined bejaviour.
+ * Casting an object to an incorrect type will lead to undefined behaviour.
  * Usage example:
  * \\code
  * td::td_api::object_ptr<td::td_api::callState> call_state = ...;
@@ -288,14 +288,15 @@ EOT
 EOT
 );
 
-        $this->addDocumentation('  virtual std::int32_t get_id() const = 0;', <<<EOT
+        $this->addDocumentation('  std::int32_t get_id() const final {', <<<EOT
   /**
    * Returns identifier uniquely determining a type of the object.
+   * \\return this->ID.
    */
 EOT
 );
 
-        $this->addDocumentation('  std::int32_t get_id() const final {', <<<EOT
+        $this->addDocumentation('  virtual std::int32_t get_id() const = 0;', <<<EOT
   /**
    * Returns identifier uniquely determining a type of the object.
    * \\return this->ID.
@@ -320,13 +321,17 @@ EOT
 );
     }
 
-    protected function addClassDocumentation($class_name, $base_class_name, $description, $return_type)
+    protected function getFunctionReturnTypeDescription($return_type, $for_constructor)
     {
-        $return_type_description = $return_type ? "\n *\n * Returns $return_type." : '';
+        $shift = $for_constructor ? '   ' : ' ';
+        return PHP_EOL.$shift.'*'.PHP_EOL.$shift."* Returns $return_type.";
+    }
 
+    protected function addClassDocumentation($class_name, $base_class_name, $description)
+    {
         $this->addDocumentation("class $class_name final : public $base_class_name {", <<<EOT
 /**
- * $description$return_type_description
+ * $description
  */
 EOT
 );
@@ -340,35 +345,35 @@ EOT
 );
     }
 
-    protected function addDefaultConstructorDocumentation($class_name)
+    protected function addDefaultConstructorDocumentation($class_name, $class_description)
     {
         $this->addDocumentation("  $class_name();", <<<EOT
   /**
-   * Default constructor. All fields will be value-initilaized.
+   * $class_description
    */
 EOT
 );
     }
 
-    protected function addFullConstructorDocumentation($class_name, $known_fields, $info)
+    protected function addFullConstructorDocumentation($class_name, $class_description, $known_fields, $info)
     {
-        $explicit = count($known_fields) == 1 ? 'explicit ' : '';
+        $explicit = count($known_fields) === 1 ? 'explicit ' : '';
         $full_constructor = "  $explicit$class_name(";
         $colon = '';
         foreach ($known_fields as $name => $type) {
-            $full_constructor .= $colon.$this->getParameterTypeName($type).$this->getFieldName($name);
+            $full_constructor .= $colon.$this->getParameterTypeName($type).$this->getFieldName($name, $class_name);
             $colon = ', ';
         }
         $full_constructor .= ');';
 
         $full_doc = <<<EOT
   /**
-   * Constructor for initialization of all fields.
+   * $class_description
    *
 
 EOT;
         foreach ($known_fields as $name => $type) {
-            $full_doc .= '   * \\param[in] '.$this->getFieldName($name).' '.$info[$name]."\n";
+            $full_doc .= '   * \\param[in] '.$this->getFieldName($name, $class_name).' '.$info[$name].PHP_EOL;
         }
         $full_doc .= '   */';
         $this->addDocumentation($full_constructor, $full_doc);

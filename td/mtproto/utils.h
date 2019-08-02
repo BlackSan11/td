@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -12,6 +12,7 @@
 #include "td/utils/Slice.h"
 #include "td/utils/Status.h"
 #include "td/utils/Storer.h"
+#include "td/utils/StorerBase.h"
 #include "td/utils/tl_parsers.h"
 #include "td/utils/tl_storers.h"
 
@@ -19,23 +20,14 @@
 
 namespace td {
 
-namespace mtproto {
-struct Query {
-  int64 message_id;
-  int32 seq_no;
-  BufferSlice packet;
-  bool gzip_flag;
-  uint64 invoke_after_id;
-  bool use_quick_ack;
-};
-}  // namespace mtproto
-
 template <class T>
-Result<typename T::ReturnType> fetch_result(Slice message) {
+Result<typename T::ReturnType> fetch_result(Slice message, bool check_end = true) {
   TlParser parser(message);
   auto result = T::fetch_result(parser);
 
-  parser.fetch_end();
+  if (check_end) {
+    parser.fetch_end();
+  }
   const char *error = parser.get_error();
   if (error != nullptr) {
     LOG(ERROR) << "Can't parse: " << format::as_hex_dump<4>(message);
@@ -46,11 +38,13 @@ Result<typename T::ReturnType> fetch_result(Slice message) {
 }
 
 template <class T>
-Result<typename T::ReturnType> fetch_result(const BufferSlice &message) {
+Result<typename T::ReturnType> fetch_result(const BufferSlice &message, bool check_end = true) {
   TlBufferParser parser(&message);
   auto result = T::fetch_result(parser);
 
-  parser.fetch_end();
+  if (check_end) {
+    parser.fetch_end();
+  }
   const char *error = parser.get_error();
   if (error != nullptr) {
     LOG(ERROR) << "Can't parse: " << format::as_hex_dump<4>(message.as_slice());
@@ -82,11 +76,10 @@ class TLObjectStorer : public Storer {
     return size_;
   }
   size_t store(uint8 *ptr) const override {
-    char *p = reinterpret_cast<char *>(ptr);
-    TlStorerUnsafe storer(p);
+    TlStorerUnsafe storer(ptr);
     storer.store_binary(object_.get_id());
     object_.store(storer);
-    return storer.get_buf() - p;
+    return static_cast<size_t>(storer.get_buf() - ptr);
   }
 };
 

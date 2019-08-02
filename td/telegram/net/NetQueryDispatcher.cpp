@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -9,14 +9,14 @@
 #include "td/telegram/net/DcAuthManager.h"
 #include "td/telegram/net/NetQuery.h"
 #include "td/telegram/net/NetQueryDelayer.h"
+#include "td/telegram/net/PublicRsaKeyShared.h"
 #include "td/telegram/net/PublicRsaKeyWatchdog.h"
 #include "td/telegram/net/SessionMultiProxy.h"
 
 #include "td/telegram/ConfigShared.h"
 #include "td/telegram/Global.h"
 #include "td/telegram/Td.h"
-
-#include "td/db/Pmc.h"
+#include "td/telegram/TdDb.h"
 
 #include "td/utils/common.h"
 #include "td/utils/format.h"
@@ -25,19 +25,24 @@
 #include "td/utils/port/thread.h"
 #include "td/utils/Slice.h"
 
-#include <algorithm>
-
 namespace td {
+
+void NetQueryDispatcher::complete_net_query(NetQueryPtr net_query) {
+  auto callback = net_query->move_callback();
+  if (callback.empty()) {
+    net_query->debug("sent to td (no callback)");
+    send_closure(G()->td(), &NetQueryCallback::on_result, std::move(net_query));
+  } else {
+    net_query->debug("sent to callback", true);
+    send_closure(std::move(callback), &NetQueryCallback::on_result, std::move(net_query));
+  }
+}
+
 void NetQueryDispatcher::dispatch(NetQueryPtr net_query) {
   net_query->debug("dispatch");
   if (stop_flag_.load(std::memory_order_relaxed)) {
-    // Set error to avoid warning
-    // No need to send result somewhere, it probably will be ignored anyway
-    net_query->set_error(Status::Error(500, "Internal Server Error: closing"));
-    net_query->clear();
-    net_query.reset();
-    // G()->net_query_creator().release(std::move(net_query));
-    return;
+    net_query->set_error(Status::Error(500, "Request aborted"));
+    return complete_net_query(std::move(net_query));
   }
 
   if (net_query->is_ready()) {
@@ -69,15 +74,7 @@ void NetQueryDispatcher::dispatch(NetQueryPtr net_query) {
   }
 
   if (net_query->is_ready()) {
-    auto callback = net_query->move_callback();
-    if (callback.empty()) {
-      net_query->debug("sent to td (no callback)");
-      send_closure(G()->td(), &NetQueryCallback::on_result, std::move(net_query));
-    } else {
-      net_query->debug("sent to callback", true);
-      send_closure(std::move(callback), &NetQueryCallback::on_result, std::move(net_query));
-    }
-    return;
+    return complete_net_query(std::move(net_query));
   }
 
   if (net_query->dispatch_ttl > 0) {
@@ -129,39 +126,43 @@ Status NetQueryDispatcher::wait_dc_init(DcId dc_id, bool force) {
 
   if (should_init) {
     std::lock_guard<std::mutex> guard(main_dc_id_mutex_);
-    if (stop_flag_.load(std::memory_order_relaxed)) {
+    if (stop_flag_.load(std::memory_order_relaxed) || need_destroy_auth_key_) {
       return Status::Error("Closing");
     }
     // init dc
+    dc.id_ = dc_id;
     decltype(common_public_rsa_key_) public_rsa_key;
     bool is_cdn = false;
+    bool need_destroy_key = false;
     if (dc_id.is_internal()) {
       public_rsa_key = common_public_rsa_key_;
     } else {
-      public_rsa_key = std::make_shared<PublicRsaKeyShared>(dc_id);
+      public_rsa_key = std::make_shared<PublicRsaKeyShared>(dc_id, G()->is_test_dc());
       send_closure_later(public_rsa_key_watchdog_, &PublicRsaKeyWatchdog::add_public_rsa_key, public_rsa_key);
       is_cdn = true;
     }
-    auto auth_data = AuthDataShared::create(dc_id, std::move(public_rsa_key));
+    auto auth_data = AuthDataShared::create(dc_id, std::move(public_rsa_key), td_guard_);
     int32 session_count = get_session_count();
     bool use_pfs = get_use_pfs();
 
     int32 slow_net_scheduler_id = G()->get_slow_net_scheduler_id();
 
     auto raw_dc_id = dc_id.get_raw_id();
+    int32 upload_session_count = raw_dc_id != 2 && raw_dc_id != 4 ? 8 : 4;
+    int32 download_session_count = 2;
+    int32 download_small_session_count = 2;
     dc.main_session_ = create_actor<SessionMultiProxy>(PSLICE() << "SessionMultiProxy:" << raw_dc_id << ":main",
-                                                       session_count, auth_data, raw_dc_id == main_dc_id_,
-                                                       use_pfs || (session_count > 1), false, false, is_cdn);
+                                                       session_count, auth_data, raw_dc_id == main_dc_id_, use_pfs,
+                                                       false, false, is_cdn, need_destroy_key);
     dc.upload_session_ = create_actor_on_scheduler<SessionMultiProxy>(
-        PSLICE() << "SessionMultiProxy:" << raw_dc_id << ":upload", slow_net_scheduler_id,
-        raw_dc_id != 2 && raw_dc_id != 4 ? 8 : 4, auth_data, false, use_pfs || (session_count > 1), false, true,
-        is_cdn);
+        PSLICE() << "SessionMultiProxy:" << raw_dc_id << ":upload", slow_net_scheduler_id, upload_session_count,
+        auth_data, false, use_pfs, false, true, is_cdn, need_destroy_key);
     dc.download_session_ = create_actor_on_scheduler<SessionMultiProxy>(
-        PSLICE() << "SessionMultiProxy:" << raw_dc_id << ":download", slow_net_scheduler_id, 1, auth_data, false,
-        use_pfs, true, true, is_cdn);
+        PSLICE() << "SessionMultiProxy:" << raw_dc_id << ":download", slow_net_scheduler_id, download_session_count,
+        auth_data, false, use_pfs, true, true, is_cdn, need_destroy_key);
     dc.download_small_session_ = create_actor_on_scheduler<SessionMultiProxy>(
-        PSLICE() << "SessionMultiProxy:" << raw_dc_id << ":download_small", slow_net_scheduler_id, 1, auth_data, false,
-        use_pfs, true, true, is_cdn);
+        PSLICE() << "SessionMultiProxy:" << raw_dc_id << ":download_small", slow_net_scheduler_id,
+        download_small_session_count, auth_data, false, use_pfs, true, true, is_cdn, need_destroy_key);
     dc.is_inited_ = true;
     if (dc_id.is_internal()) {
       send_closure_later(dc_auth_manager_, &DcAuthManager::add_dc, std::move(auth_data));
@@ -186,6 +187,7 @@ void NetQueryDispatcher::dispatch_with_callback(NetQueryPtr net_query, ActorShar
 
 void NetQueryDispatcher::stop() {
   std::lock_guard<std::mutex> guard(main_dc_id_mutex_);
+  td_guard_.reset();
   stop_flag_ = true;
   delayer_.hangup();
   for (const auto &dc : dcs_) {
@@ -204,38 +206,64 @@ void NetQueryDispatcher::update_session_count() {
   bool use_pfs = get_use_pfs();
   for (size_t i = 1; i < MAX_DC_COUNT; i++) {
     if (is_dc_inited(narrow_cast<int32>(i))) {
-      send_closure_later(dcs_[i - 1].main_session_, &SessionMultiProxy::update_options, session_count,
-                         use_pfs || (session_count > 1));
-    }
-  }
-}
-
-void NetQueryDispatcher::update_use_pfs() {
-  std::lock_guard<std::mutex> guard(main_dc_id_mutex_);
-  int32 session_count = get_session_count();
-  bool use_pfs = get_use_pfs();
-  for (size_t i = 1; i < MAX_DC_COUNT; i++) {
-    if (is_dc_inited(narrow_cast<int32>(i))) {
-      send_closure_later(dcs_[i - 1].main_session_, &SessionMultiProxy::update_use_pfs, use_pfs || (session_count > 1));
+      send_closure_later(dcs_[i - 1].main_session_, &SessionMultiProxy::update_options, session_count, use_pfs);
       send_closure_later(dcs_[i - 1].upload_session_, &SessionMultiProxy::update_use_pfs, use_pfs);
       send_closure_later(dcs_[i - 1].download_session_, &SessionMultiProxy::update_use_pfs, use_pfs);
       send_closure_later(dcs_[i - 1].download_small_session_, &SessionMultiProxy::update_use_pfs, use_pfs);
     }
   }
 }
+void NetQueryDispatcher::destroy_auth_keys(Promise<> promise) {
+  std::lock_guard<std::mutex> guard(main_dc_id_mutex_);
+  LOG(INFO) << "Destory auth keys";
+  need_destroy_auth_key_ = true;
+  for (size_t i = 1; i < MAX_DC_COUNT; i++) {
+    if (is_dc_inited(narrow_cast<int32>(i)) && dcs_[i - 1].id_.is_internal()) {
+      send_closure_later(dcs_[i - 1].main_session_, &SessionMultiProxy::update_destroy_auth_key,
+                         need_destroy_auth_key_);
+    }
+  }
+  send_closure_later(dc_auth_manager_, &DcAuthManager::destroy, std::move(promise));
+}
+
+void NetQueryDispatcher::update_use_pfs() {
+  std::lock_guard<std::mutex> guard(main_dc_id_mutex_);
+  bool use_pfs = get_use_pfs();
+  for (size_t i = 1; i < MAX_DC_COUNT; i++) {
+    if (is_dc_inited(narrow_cast<int32>(i))) {
+      send_closure_later(dcs_[i - 1].main_session_, &SessionMultiProxy::update_use_pfs, use_pfs);
+      send_closure_later(dcs_[i - 1].upload_session_, &SessionMultiProxy::update_use_pfs, use_pfs);
+      send_closure_later(dcs_[i - 1].download_session_, &SessionMultiProxy::update_use_pfs, use_pfs);
+      send_closure_later(dcs_[i - 1].download_small_session_, &SessionMultiProxy::update_use_pfs, use_pfs);
+    }
+  }
+}
+
+void NetQueryDispatcher::update_mtproto_header() {
+  std::lock_guard<std::mutex> guard(main_dc_id_mutex_);
+  for (size_t i = 1; i < MAX_DC_COUNT; i++) {
+    if (is_dc_inited(narrow_cast<int32>(i))) {
+      send_closure_later(dcs_[i - 1].main_session_, &SessionMultiProxy::update_mtproto_header);
+      send_closure_later(dcs_[i - 1].upload_session_, &SessionMultiProxy::update_mtproto_header);
+      send_closure_later(dcs_[i - 1].download_session_, &SessionMultiProxy::update_mtproto_header);
+      send_closure_later(dcs_[i - 1].download_small_session_, &SessionMultiProxy::update_mtproto_header);
+    }
+  }
+}
+
 void NetQueryDispatcher::update_valid_dc(DcId dc_id) {
-  wait_dc_init(dc_id, true);
+  wait_dc_init(dc_id, true).ignore();
 }
 
 bool NetQueryDispatcher::is_dc_inited(int32 raw_dc_id) {
   return dcs_[raw_dc_id - 1].is_valid_.load(std::memory_order_relaxed);
 }
 int32 NetQueryDispatcher::get_session_count() {
-  return std::max(G()->shared_config().get_option_integer("session_count"), 1);
+  return max(G()->shared_config().get_option_integer("session_count"), 1);
 }
 
 bool NetQueryDispatcher::get_use_pfs() {
-  return G()->shared_config().get_option_boolean("use_pfs");
+  return G()->shared_config().get_option_boolean("use_pfs") || get_session_count() > 1;
 }
 
 NetQueryDispatcher::NetQueryDispatcher(std::function<ActorShared<>()> create_reference) {
@@ -246,8 +274,10 @@ NetQueryDispatcher::NetQueryDispatcher(std::function<ActorShared<>()> create_ref
   LOG(INFO) << tag("main_dc_id", main_dc_id_.load(std::memory_order_relaxed));
   delayer_ = create_actor<NetQueryDelayer>("NetQueryDelayer", create_reference());
   dc_auth_manager_ = create_actor<DcAuthManager>("DcAuthManager", create_reference());
-  common_public_rsa_key_ = std::make_shared<PublicRsaKeyShared>(DcId::empty());
+  common_public_rsa_key_ = std::make_shared<PublicRsaKeyShared>(DcId::empty(), G()->is_test_dc());
   public_rsa_key_watchdog_ = create_actor<PublicRsaKeyWatchdog>("PublicRsaKeyWatchdog", create_reference());
+
+  td_guard_ = create_shared_lambda_guard([actor = create_reference()] {});
 }
 
 NetQueryDispatcher::NetQueryDispatcher() = default;

@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -9,17 +9,19 @@
 #include "td/telegram/files/ResourceManager.h"
 #include "td/telegram/Global.h"
 #include "td/telegram/net/NetQueryDispatcher.h"
-#include "td/telegram/Td.h"
 #include "td/telegram/UniqueId.h"
 
+#include "td/utils/common.h"
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
 #include "td/utils/ScopeGuard.h"
 
 #include <tuple>
+#include <utility>
 
 namespace td {
+
 void FileLoader::set_resource_manager(ActorShared<ResourceManager> resource_manager) {
   resource_manager_ = std::move(resource_manager);
   send_closure(resource_manager_, &ResourceManager::update_resources, resource_state_);
@@ -29,7 +31,7 @@ void FileLoader::update_priority(int8 priority) {
 }
 void FileLoader::update_resources(const ResourceState &other) {
   resource_state_.update_slave(other);
-  VLOG(files) << "update resources " << resource_state_;
+  VLOG(files) << "Update resources " << resource_state_;
   loop();
 }
 void FileLoader::set_ordered_flag(bool flag) {
@@ -47,7 +49,7 @@ void FileLoader::hangup() {
 }
 
 void FileLoader::update_local_file_location(const LocalFileLocation &local) {
-  auto r_prefix_info = on_update_local_location(local);
+  auto r_prefix_info = on_update_local_location(local, parts_manager_.get_size_or_zero());
   if (r_prefix_info.is_error()) {
     on_error(r_prefix_info.move_as_error());
     stop_flag_ = true;
@@ -63,6 +65,22 @@ void FileLoader::update_local_file_location(const LocalFileLocation &local) {
   loop();
 }
 
+void FileLoader::update_download_offset(int64 offset) {
+  parts_manager_.set_streaming_offset(offset);
+  //TODO: cancel only some queries
+  for (auto &it : part_map_) {
+    it.second.second.reset();  // cancel_query(it.second.second);
+  }
+  update_estimated_limit();
+  loop();
+}
+
+void FileLoader::update_download_limit(int64 limit) {
+  parts_manager_.set_streaming_limit(limit);
+  update_estimated_limit();
+  loop();
+}
+
 void FileLoader::start_up() {
   auto r_file_info = init();
   if (r_file_info.is_error()) {
@@ -72,7 +90,7 @@ void FileLoader::start_up() {
   }
   auto file_info = r_file_info.ok();
   auto size = file_info.size;
-  auto expected_size = std::max(size, file_info.expected_size);
+  auto expected_size = max(size, file_info.expected_size);
   bool is_size_final = file_info.is_size_final;
   auto part_size = file_info.part_size;
   auto &ready_parts = file_info.ready_parts;
@@ -83,12 +101,21 @@ void FileLoader::start_up() {
     stop_flag_ = true;
     return;
   }
+  if (file_info.only_check) {
+    parts_manager_.set_checked_prefix_size(0);
+  }
+  parts_manager_.set_streaming_offset(file_info.offset);
+  parts_manager_.set_streaming_limit(file_info.limit);
   if (ordered_flag_) {
     ordered_parts_ = OrderedEventsProcessor<std::pair<Part, NetQueryPtr>>(parts_manager_.get_ready_prefix_count());
   }
+  if (file_info.need_delay) {
+    delay_dispatcher_ = create_actor<DelayDispatcher>("DelayDispatcher", 0.003);
+    next_delay_ = 0.05;
+  }
   resource_state_.set_unit_size(parts_manager_.get_part_size());
   update_estimated_limit();
-  on_progress_impl(narrow_cast<size_t>(parts_manager_.get_ready_size()));
+  on_progress_impl();
   yield();
 }
 
@@ -110,18 +137,24 @@ Status FileLoader::do_loop() {
   TRY_RESULT(check_info,
              check_loop(parts_manager_.get_checked_prefix_size(), parts_manager_.get_unchecked_ready_prefix_size(),
                         parts_manager_.unchecked_ready()));
+  if (check_info.changed) {
+    on_progress_impl();
+  }
   for (auto &query : check_info.queries) {
     G()->net_query_dispatcher().dispatch_with_callback(
-        std::move(query), actor_shared(this, UniqueId::next(UniqueId::Type::Default, CommonQueryKey)));
+        std::move(query), actor_shared(this, UniqueId::next(UniqueId::Type::Default, COMMON_QUERY_KEY)));
   }
   if (check_info.need_check) {
     parts_manager_.set_need_check();
     parts_manager_.set_checked_prefix_size(check_info.checked_prefix_size);
   }
 
-  if (parts_manager_.ready()) {
+  if (parts_manager_.may_finish()) {
     TRY_STATUS(parts_manager_.finish());
     TRY_STATUS(on_ok(parts_manager_.get_size()));
+    LOG(INFO) << "Bad download order rate: "
+              << (debug_total_parts_ == 0 ? 0.0 : 100.0 * debug_bad_part_order_ / debug_total_parts_) << "% "
+              << debug_bad_part_order_ << "/" << debug_total_parts_ << " " << format::as_array(debug_bad_parts_);
     stop_flag_ = true;
     return Status::OK();
   }
@@ -156,24 +189,33 @@ Status FileLoader::do_loop() {
     }
     part_map_[id] = std::make_pair(part, query->cancel_slot_.get_signal_new());
     // part_map_[id] = std::make_pair(part, query.get_weak());
-    G()->net_query_dispatcher().dispatch_with_callback(std::move(query), actor_shared(this, id));
+
+    auto callback = actor_shared(this, id);
+    if (delay_dispatcher_.empty()) {
+      G()->net_query_dispatcher().dispatch_with_callback(std::move(query), std::move(callback));
+    } else {
+      send_closure(delay_dispatcher_, &DelayDispatcher::send_with_callback_and_delay, std::move(query),
+                   std::move(callback), next_delay_);
+      next_delay_ = max(next_delay_ * 0.8, 0.003);
+    }
   }
   return Status::OK();
 }
 
 void FileLoader::tear_down() {
   for (auto &it : part_map_) {
-    it.second.second.reset();
-    // cancel_query(it.second.second);
+    it.second.second.reset();  // cancel_query(it.second.second);
   }
+  ordered_parts_.clear([](auto &&part) { part.second->clear(); });
+  send_closure(std::move(delay_dispatcher_), &DelayDispatcher::close_silent);
 }
 void FileLoader::update_estimated_limit() {
   if (stop_flag_) {
     return;
   }
-  auto estimated_exta = parts_manager_.get_expected_size() - parts_manager_.get_ready_size();
-  resource_state_.update_estimated_limit(estimated_exta);
-  VLOG(files) << "update estimated limit " << estimated_exta;
+  auto estimated_extra = parts_manager_.get_estimated_extra();
+  resource_state_.update_estimated_limit(estimated_extra);
+  VLOG(files) << "Update estimated limit " << estimated_extra;
   if (!resource_manager_.empty()) {
     keep_fd_flag(narrow_cast<uint64>(resource_state_.active_limit()) >= parts_manager_.get_part_size());
     send_closure(resource_manager_, &ResourceManager::update_resources, resource_state_);
@@ -188,7 +230,7 @@ void FileLoader::on_result(NetQueryPtr query) {
   if (id == blocking_id_) {
     blocking_id_ = 0;
   }
-  if (UniqueId::extract_key(id) == CommonQueryKey) {
+  if (UniqueId::extract_key(id) == COMMON_QUERY_KEY) {
     on_common_query(std::move(query));
     return loop();
   }
@@ -205,6 +247,9 @@ void FileLoader::on_result(NetQueryPtr query) {
   bool next = false;
   auto status = [&] {
     TRY_RESULT(should_restart, should_restart_part(part, query));
+    if (query->is_error() && query->error().code() == NetQuery::Error::Cancelled) {
+      should_restart = true;
+    }
     if (should_restart) {
       VLOG(files) << "Restart part " << tag("id", part.id) << tag("size", part.size);
       resource_state_.stop_use(static_cast<int64>(part.size));
@@ -253,13 +298,28 @@ Status FileLoader::try_on_part_query(Part part, NetQueryPtr query) {
   TRY_RESULT(size, process_part(part, std::move(query)));
   VLOG(files) << "Ok part " << tag("id", part.id) << tag("size", part.size);
   resource_state_.stop_use(static_cast<int64>(part.size));
+  auto old_ready_prefix_count = parts_manager_.get_unchecked_ready_prefix_count();
   TRY_STATUS(parts_manager_.on_part_ok(part.id, part.size, size));
-  on_progress_impl(size);
+  auto new_ready_prefix_count = parts_manager_.get_unchecked_ready_prefix_count();
+  debug_total_parts_++;
+  if (old_ready_prefix_count == new_ready_prefix_count) {
+    debug_bad_parts_.push_back(part.id);
+    debug_bad_part_order_++;
+  }
+  on_progress_impl();
   return Status::OK();
 }
 
-void FileLoader::on_progress_impl(size_t size) {
-  on_progress(parts_manager_.get_part_count(), static_cast<int32>(parts_manager_.get_part_size()),
-              parts_manager_.get_ready_prefix_count(), parts_manager_.ready(), parts_manager_.get_ready_size());
+void FileLoader::on_progress_impl() {
+  Progress progress;
+  progress.part_count = parts_manager_.get_part_count();
+  progress.part_size = static_cast<int32>(parts_manager_.get_part_size());
+  progress.ready_part_count = parts_manager_.get_ready_prefix_count();
+  progress.ready_bitmask = parts_manager_.get_bitmask();
+  progress.is_ready = parts_manager_.ready();
+  progress.ready_size = parts_manager_.get_ready_size();
+  progress.size = parts_manager_.get_size_or_zero();
+  on_progress(std::move(progress));
 }
+
 }  // namespace td

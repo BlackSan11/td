@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -11,15 +11,17 @@
 #include "td/utils/Closure.h"
 #include "td/utils/common.h"
 #include "td/utils/invoke.h"  // for tuple_for_each
-#include "td/utils/logging.h"
 #include "td/utils/ScopeGuard.h"
 #include "td/utils/Status.h"
 
+#include <atomic>
+#include <memory>
 #include <tuple>
 #include <type_traits>
 #include <utility>
 
 namespace td {
+
 template <class T = Unit>
 class PromiseInterface {
  public:
@@ -42,30 +44,17 @@ class PromiseInterface {
       set_error(result.move_as_error());
     }
   }
+  virtual bool is_cancellable() const {
+    return false;
+  }
+  virtual bool is_cancelled() const {
+    return false;
+  }
+
   virtual void start_migrate(int32 sched_id) {
   }
   virtual void finish_migrate() {
   }
-};
-
-template <class T = Unit>
-class FutureInterface {
- public:
-  FutureInterface() = default;
-  FutureInterface(const FutureInterface &) = delete;
-  FutureInterface &operator=(const FutureInterface &) = delete;
-  FutureInterface(FutureInterface &&) = default;
-  FutureInterface &operator=(FutureInterface &&) = default;
-  virtual ~FutureInterface() = default;
-  virtual bool is_ready() = 0;
-  virtual bool is_ok() = 0;
-  virtual bool is_error() = 0;
-  virtual const T &ok() = 0;
-  virtual T move_as_ok() = 0;
-  virtual const Status &error() = 0;
-  virtual Status move_as_error() TD_WARN_UNUSED_RESULT = 0;
-  virtual const Result<T> &result() = 0;
-  virtual Result<T> move_as_result() TD_WARN_UNUSED_RESULT = 0;
 };
 
 template <class T>
@@ -110,12 +99,24 @@ class Promise {
     }
     promise_->finish_migrate();
   }
-  std::unique_ptr<PromiseInterface<T>> release() {
+  bool is_cancellable() const {
+    if (!promise_) {
+      return false;
+    }
+    return promise_->is_cancellable();
+  }
+  bool is_cancelled() const {
+    if (!promise_) {
+      return false;
+    }
+    return promise_->is_cancelled();
+  }
+  unique_ptr<PromiseInterface<T>> release() {
     return std::move(promise_);
   }
 
   Promise() = default;
-  explicit Promise(std::unique_ptr<PromiseInterface<T>> promise) : promise_(std::move(promise)) {
+  explicit Promise(unique_ptr<PromiseInterface<T>> promise) : promise_(std::move(promise)) {
   }
   Promise(SafePromise<T> &&other);
   Promise &operator=(SafePromise<T> &&other);
@@ -125,7 +126,7 @@ class Promise {
   }
 
  private:
-  std::unique_ptr<PromiseInterface<T>> promise_;
+  unique_ptr<PromiseInterface<T>> promise_;
 };
 
 template <class T>
@@ -168,6 +169,42 @@ Promise<T> &Promise<T>::operator=(SafePromise<T> &&other) {
   *this = other.release();
   return *this;
 }
+
+class CancellationToken {
+ public:
+  explicit CancellationToken(bool init = false) {
+    if (init) {
+      ptr_ = std::make_shared<std::atomic<bool>>(false);
+    }
+  }
+  CancellationToken(const CancellationToken &other) = default;
+  CancellationToken &operator=(const CancellationToken &other) {
+    cancel();
+    ptr_ = other.ptr_;
+    return *this;
+  }
+  CancellationToken(CancellationToken &&other) = default;
+  CancellationToken &operator=(CancellationToken &&other) {
+    cancel();
+    ptr_ = std::move(other.ptr_);
+    return *this;
+  }
+  ~CancellationToken() {
+    cancel();
+  }
+  bool is_canceled() const {
+    return !ptr_ || *ptr_;
+  }
+  void cancel() {
+    if (ptr_) {
+      ptr_->store(true, std::memory_order_relaxed);
+      ptr_.reset();
+    }
+  }
+
+ private:
+  std::shared_ptr<std::atomic<bool>> ptr_;
+};
 
 namespace detail {
 
@@ -238,6 +275,24 @@ struct DropResult<Result<T>> {
 
 template <class T>
 using drop_result_t = typename DropResult<T>::type;
+
+template <class PromiseT>
+class CancellablePromise : public PromiseT {
+ public:
+  template <class... ArgsT>
+  CancellablePromise(CancellationToken cancellation_token, ArgsT &&... args)
+      : PromiseT(std::forward<ArgsT>(args)...), cancellation_token_(std::move(cancellation_token)) {
+  }
+  virtual bool is_cancellable() const {
+    return true;
+  }
+  virtual bool is_cancelled() const {
+    return cancellation_token_.is_canceled();
+  }
+
+ private:
+  CancellationToken cancellation_token_;
+};
 
 template <class ValueT, class FunctionOkT, class FunctionFailT>
 class LambdaPromise : public PromiseInterface<ValueT> {
@@ -373,7 +428,7 @@ class PromiseActor final : public PromiseInterface<T> {
  private:
   ActorOwn<FutureActor<T>> future_id_;
   EventFull event_;
-  State state_;
+  State state_ = State::Hangup;
 
   void init() {
     state_ = State::Waiting;
@@ -387,6 +442,8 @@ class FutureActor final : public Actor {
   enum State { Waiting, Ready };
 
  public:
+  static constexpr int Hangup = 426487;
+
   FutureActor() = default;
 
   FutureActor(const FutureActor &other) = delete;
@@ -440,7 +497,7 @@ class FutureActor final : public Actor {
 
  private:
   EventFull event_;
-  Result<T> result_;
+  Result<T> result_ = Status::Error(500, "Empty FutureActor");
   State state_;
 
   void set_value(T &&value) {
@@ -460,7 +517,7 @@ class FutureActor final : public Actor {
   }
 
   void hangup() override {
-    set_error(Status::Hangup());
+    set_error(Status::Error<Hangup>());
   }
 
   void start_up() override {
@@ -520,12 +577,13 @@ class PromiseFuture {
   FutureActor<T> future_;
 };
 
-template <class T, class ActorAT, class ActorBT, class ResultT, class... DestArgsT, class... ArgsT>
-FutureActor<T> send_promise(ActorId<ActorAT> actor_id, Send::Flags flags,
-                            ResultT (ActorBT::*func)(PromiseActor<T> &&, DestArgsT...), ArgsT &&... args) {
+template <ActorSendType send_type, class T, class ActorAT, class ActorBT, class ResultT, class... DestArgsT,
+          class... ArgsT>
+FutureActor<T> send_promise(ActorId<ActorAT> actor_id, ResultT (ActorBT::*func)(PromiseActor<T> &&, DestArgsT...),
+                            ArgsT &&... args) {
   PromiseFuture<T> pf;
-  ::td::Scheduler::instance()->send_closure(
-      std::move(actor_id), create_immediate_closure(func, pf.move_promise(), std::forward<ArgsT>(args)...), flags);
+  Scheduler::instance()->send_closure<send_type>(
+      std::move(actor_id), create_immediate_closure(func, pf.move_promise(), std::forward<ArgsT>(args)...));
   return pf.move_future();
 }
 
@@ -539,32 +597,40 @@ class PromiseCreator {
 
   template <class OkT, class ArgT = detail::drop_result_t<detail::get_arg_t<OkT>>>
   static Promise<ArgT> lambda(OkT &&ok) {
-    return Promise<ArgT>(std::make_unique<detail::LambdaPromise<ArgT, std::decay_t<OkT>, Ignore>>(std::forward<OkT>(ok),
-                                                                                                  Ignore(), true));
+    return Promise<ArgT>(
+        td::make_unique<detail::LambdaPromise<ArgT, std::decay_t<OkT>, Ignore>>(std::forward<OkT>(ok), Ignore(), true));
   }
 
   template <class OkT, class FailT, class ArgT = detail::get_arg_t<OkT>>
   static Promise<ArgT> lambda(OkT &&ok, FailT &&fail) {
-    return Promise<ArgT>(std::make_unique<detail::LambdaPromise<ArgT, std::decay_t<OkT>, std::decay_t<FailT>>>(
+    return Promise<ArgT>(td::make_unique<detail::LambdaPromise<ArgT, std::decay_t<OkT>, std::decay_t<FailT>>>(
         std::forward<OkT>(ok), std::forward<FailT>(fail), false));
   }
 
+  template <class OkT, class ArgT = detail::drop_result_t<detail::get_arg_t<OkT>>>
+  static auto cancellable_lambda(CancellationToken cancellation_token, OkT &&ok) {
+    return Promise<ArgT>(
+        td::make_unique<detail::CancellablePromise<detail::LambdaPromise<ArgT, std::decay_t<OkT>, Ignore>>>(
+            std::move(cancellation_token), std::forward<OkT>(ok), Ignore(), true));
+  }
+
   static Promise<> event(EventFull &&ok) {
-    return Promise<>(std::make_unique<detail::EventPromise>(std::move(ok)));
+    return Promise<>(td::make_unique<detail::EventPromise>(std::move(ok)));
   }
 
   static Promise<> event(EventFull ok, EventFull fail) {
-    return Promise<>(std::make_unique<detail::EventPromise>(std::move(ok), std::move(fail)));
+    return Promise<>(td::make_unique<detail::EventPromise>(std::move(ok), std::move(fail)));
   }
 
   template <class... ArgsT>
   static Promise<> join(ArgsT &&... args) {
-    return Promise<>(std::make_unique<detail::JoinPromise<ArgsT...>>(std::forward<ArgsT>(args)...));
+    return Promise<>(td::make_unique<detail::JoinPromise<ArgsT...>>(std::forward<ArgsT>(args)...));
   }
 
   template <class T>
   static Promise<T> from_promise_actor(PromiseActor<T> &&from) {
-    return Promise<T>(std::make_unique<PromiseActor<T>>(std::move(from)));
+    return Promise<T>(td::make_unique<PromiseActor<T>>(std::move(from)));
   }
 };
+
 }  // namespace td

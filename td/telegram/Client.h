@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -77,7 +77,7 @@ class Client final {
    * Sends request to TDLib. May be called from any thread.
    * \param[in] request Request to TDLib.
    */
-  void send(Request request);
+  void send(Request &&request);
 
   /**
    * A response to a request, or an incoming update from TDLib.
@@ -109,7 +109,7 @@ class Client final {
    * \param[in] request Request to the TDLib.
    * \return The request response.
    */
-  static Response execute(Request request);
+  static Response execute(Request &&request);
 
   /**
    * Destroys the client and TDLib instance.

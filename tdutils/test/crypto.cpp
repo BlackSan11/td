@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -9,6 +9,7 @@
 #include "td/utils/crypto.h"
 #include "td/utils/Slice.h"
 #include "td/utils/tests.h"
+#include "td/utils/UInt.h"
 
 #include <limits>
 
@@ -65,7 +66,7 @@ TEST(Crypto, Sha256State) {
   for (auto length : {0, 1, 31, 32, 33, 9999, 10000, 10001, 999999, 1000001}) {
     auto s = td::rand_string(std::numeric_limits<char>::min(), std::numeric_limits<char>::max(), length);
     td::UInt256 baseline;
-    td::sha256(s, td::MutableSlice(baseline.raw, 32));
+    td::sha256(s, as_slice(baseline));
 
     td::Sha256State state;
     td::sha256_init(&state);
@@ -74,7 +75,7 @@ TEST(Crypto, Sha256State) {
       td::sha256_update(x, &state);
     }
     td::UInt256 result;
-    td::sha256_final(&state, td::MutableSlice(result.raw, 32));
+    td::sha256_final(&state, as_slice(result));
     ASSERT_TRUE(baseline == result);
   }
 }
@@ -157,10 +158,70 @@ TEST(Crypto, crc32) {
 }
 #endif
 
+#if TD_HAVE_CRC32C
+TEST(Crypto, crc32c) {
+  td::vector<td::uint32> answers{0u, 2432014819u, 1077264849u, 1131405888u};
+
+  for (std::size_t i = 0; i < strings.size(); i++) {
+    ASSERT_EQ(answers[i], td::crc32c(strings[i]));
+  }
+}
+#endif
+
 TEST(Crypto, crc64) {
   td::vector<td::uint64> answers{0ull, 3039664240384658157ull, 17549519902062861804ull, 8794730974279819706ull};
 
   for (std::size_t i = 0; i < strings.size(); i++) {
     ASSERT_EQ(answers[i], td::crc64(strings[i]));
   }
+}
+
+static td::Slice rsa_private_key = R"ABCD(
+-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDeYT5/prmLEa2Q
+tZND+UwTmif8kl2VlXaMCjj1k1lJJq8BqS8cVM2vPnOPzFoiC2LYykhm4kk7goCC
+ZH6wez9yakg28fcq0Ycv0x8DL1K+VKHJuwIhVfQs//IY1/cBOrMESc+NQowPbv1t
+TIFxBO2gebnpLuseht8ix7XtpGC4qAaHN2aEvT2cRsnA76TAK1RVxf1OYGUFBDzY
+318WpVZfVIjcQ7K9+eU6b2Yb84VLlvJXw3e1rvw+fBzx2EjpD4zhXy11YppWDyV6
+HEb2hs3cGS/LbHfHvdcSfil2omaJP97MDEEY2HFxjR/E5CEf2suvPzX4XS3RE+S3
+2aEJaaQbAgMBAAECggEAKo3XRNwls0wNt5xXcvF4smOUdUuY5u/0AHZQUgYBVvM1
+GA9E+ZnsxjUgLgs/0DX3k16aHj39H4sohksuxxy+lmlqKkGBN8tioC85RwW+Qre1
+QgIsNS7ai+XqcQCavrx51z88nV53qNhnXIwAVR1JT6Ubg1i8G1pZxrEKyk/jRlJd
+mGjf6vjitH//PPkghPJ/D42k93YRcy+duOgqYDQpLZp8DiEGfYrX10B1H7HrWLV+
+Wp5KO1YXtKgQUplj6kYy72bVajbxYTvzgjaaKsh74jBO0uT3tHTtXG0dcKGb0VR/
+cqP/1H/lC9bAnAqAGefNusGJQZIElvTsrpIQXOeZsQKBgQD2W04S+FjqYYFjnEFX
+6eL4it01afs5M3/C6CcI5JQtN6p+Na4NCSILol33xwhakn87zqdADHawBYQVQ8Uw
+dPurl805wfkzN3AbfdDmtx0IJ8vK4HFpktRjfpwBVhlVtm1doAYFqqsuCF2vWW1t
+mM2YOSq4AnRHCeBb/P6kRIW0MwKBgQDnFawKKqiC4tuyBOkkEhexlm7x9he0md7D
+3Z2hc3Bmdcq1niw4wBq3HUxGLReGCcSr5epKSQwkunlTn5ZSC6Rmbe4zxsGIwbb3
+5W3342swBaoxEIuBokBvZ/xUOXVwiqKj+S/NzVkZcnT6K9V/HnUCQR+JBbQxFQaX
+iiezcjKoeQKBgCIVUcDoIQ0UPl10ocmy7xbpx177calhSZzCl5vwW9vBptHdRV5C
+VDZ92ThNjgdR205/8b23u7fwm2yBusdQd/0ufFMwVfTTB6yWBI/W56pYLya7VJWB
+nebB/n1k1w53tbvNRugDy7kLqUJ4Qd521ILp7dIVbNbjM+omH2jEnibnAoGBAIM5
+a1jaoJay/M86uqohHBNcuePtO8jzF+1iDAGC7HFCsrov+CzB6mnR2V6AfLtBEM4M
+4d8NXDf/LKawGUy+D72a74m3dG+UkbJ0Nt5t5pB+pwb1vkL/QFgDVOb/OhGOqI01
+FFBqLA6nUIZAHhzxzsBY+u90rb6xkey8J49faiUBAoGAaMgOgEvQB5H19ZL5tMkl
+A/DKtTz/NFzN4Zw/vNPVb7eNn4jg9M25d9xqvL4acOa+nuV3nLHbcUWE1/7STXw1
+gT58CvoEmD1AiP95nup+HKHENJ1DWMgF5MDfVQwGCvWP5/Qy89ybr0eG8HjbldbN
+MpSmzz2wOz152oGdOd3syT4=
+-----END PRIVATE KEY-----
+)ABCD";
+
+static td::Slice rsa_public_key = R"ABCD(
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3mE+f6a5ixGtkLWTQ/lM
+E5on/JJdlZV2jAo49ZNZSSavAakvHFTNrz5zj8xaIgti2MpIZuJJO4KAgmR+sHs/
+cmpINvH3KtGHL9MfAy9SvlShybsCIVX0LP/yGNf3ATqzBEnPjUKMD279bUyBcQTt
+oHm56S7rHobfIse17aRguKgGhzdmhL09nEbJwO+kwCtUVcX9TmBlBQQ82N9fFqVW
+X1SI3EOyvfnlOm9mG/OFS5byV8N3ta78Pnwc8dhI6Q+M4V8tdWKaVg8lehxG9obN
+3Bkvy2x3x73XEn4pdqJmiT/ezAxBGNhxcY0fxOQhH9rLrz81+F0t0RPkt9mhCWmk
+GwIDAQAB
+-----END PUBLIC KEY-----
+)ABCD";
+
+TEST(Crypto, rsa) {
+  auto value = td::rand_string('a', 'z', 200);
+  auto encrypted_value = td::rsa_encrypt_pkcs1_oaep(rsa_public_key, value).move_as_ok();
+  auto decrypted_value = td::rsa_decrypt_pkcs1_oaep(rsa_private_key, encrypted_value.as_slice()).move_as_ok();
+  ASSERT_TRUE(decrypted_value.as_slice().truncate(value.size()) == value);
 }

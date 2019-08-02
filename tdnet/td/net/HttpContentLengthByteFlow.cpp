@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -8,8 +8,6 @@
 
 #include "td/utils/Status.h"
 
-#include <algorithm>
-
 namespace td {
 
 void HttpContentLengthByteFlow::loop() {
@@ -17,7 +15,7 @@ void HttpContentLengthByteFlow::loop() {
   if (ready_size > len_) {
     ready_size = len_;
   }
-  auto need_size = std::min(MIN_UPDATE_SIZE, len_);
+  auto need_size = min(MIN_UPDATE_SIZE, len_);
   if (ready_size < need_size) {
     set_need_size(need_size);
     return;
@@ -32,6 +30,5 @@ void HttpContentLengthByteFlow::loop() {
   }
   on_output_updated();
 }
-constexpr size_t HttpContentLengthByteFlow::MIN_UPDATE_SIZE;
 
 }  // namespace td

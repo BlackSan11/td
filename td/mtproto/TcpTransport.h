@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -7,23 +7,21 @@
 #pragma once
 
 #include "td/mtproto/IStreamTransport.h"
+#include "td/mtproto/TransportType.h"
 
 #include "td/utils/AesCtrByteFlow.h"
 #include "td/utils/buffer.h"
 #include "td/utils/ByteFlow.h"
 #include "td/utils/common.h"
 #include "td/utils/crypto.h"
-#include "td/utils/logging.h"
-#include "td/utils/port/Fd.h"
-#include "td/utils/Random.h"
-#include "td/utils/Slice.h"
+#include "td/utils/port/detail/PollableFd.h"
 #include "td/utils/Status.h"
-
-#include <algorithm>
+#include "td/utils/UInt.h"
 
 namespace td {
 namespace mtproto {
 namespace tcp {
+
 class ITransport {
   // Writes packet into message.
   // Returns 0 if everything is ok, and [expected_size] otherwise.
@@ -61,12 +59,20 @@ class AbridgedTransport : public ITransport {
 
 class IntermediateTransport : ITransport {
  public:
+  explicit IntermediateTransport(bool with_padding) : with_padding_(with_padding) {
+  }
   size_t read_from_stream(ChainBufferReader *stream, BufferSlice *message, uint32 *quick_ack) override;
   void write_prepare_inplace(BufferWriter *message, bool quick_ack) override;
   void init_output_stream(ChainBufferWriter *stream) override;
   bool support_quick_ack() const override {
     return true;
   }
+  bool with_padding() const {
+    return with_padding_;
+  }
+
+ private:
+  bool with_padding_;
 };
 
 using TransportImpl = IntermediateTransport;
@@ -99,19 +105,26 @@ class OldTransport : public IStreamTransport {
   size_t max_prepend_size() const override {
     return 4;
   }
+
+  size_t max_append_size() const override {
+    return 15;
+  }
+
   TransportType get_type() const override {
-    return TransportType::Tcp;
+    return TransportType{TransportType::Tcp, 0, ""};
   }
 
  private:
-  TransportImpl impl_;
+  TransportImpl impl_{false};
   ChainBufferReader *input_;
   ChainBufferWriter *output_;
 };
 
 class ObfuscatedTransport : public IStreamTransport {
  public:
-  ObfuscatedTransport() = default;
+  ObfuscatedTransport(int16 dc_id, std::string secret)
+      : dc_id_(dc_id), secret_(std::move(secret)), impl_(secret_.size() >= 17) {
+  }
   Result<size_t> read_next(BufferSlice *message, uint32 *quick_ack) override TD_WARN_UNUSED_RESULT {
     aes_ctr_byte_flow_.wakeup();
     return impl_.read_from_stream(byte_flow_sink_.get_output(), message, quick_ack);
@@ -128,48 +141,7 @@ class ObfuscatedTransport : public IStreamTransport {
     output_->append(std::move(slice));
   }
 
-  void init(ChainBufferReader *input, ChainBufferWriter *output) override {
-    input_ = input;
-    output_ = output;
-
-    const size_t header_size = 64;
-    string header(header_size, '\0');
-    MutableSlice header_slice = header;
-    int32 try_cnt = 0;
-    while (true) {
-      try_cnt++;
-      CHECK(try_cnt < 10);
-      Random::secure_bytes(header_slice.ubegin(), header.size());
-      if (as<uint8>(header.data()) == 0xef) {
-        continue;
-      }
-      auto first_int = as<uint32>(header.data());
-      if (first_int == 0x44414548 || first_int == 0x54534f50 || first_int == 0x20544547 || first_int == 0x4954504f ||
-          first_int == 0xeeeeeeee) {
-        continue;
-      }
-      auto second_int = as<uint32>(header.data() + sizeof(uint32));
-      if (second_int == 0) {
-        continue;
-      }
-      break;
-    }
-    // TODO: It is actually IntermediateTransport::init_output_stream, so it will work only with
-    // TransportImpl==IntermediateTransport
-    as<uint32>(header_slice.begin() + 56) = 0xeeeeeeee;
-
-    string rheader = header;
-    std::reverse(rheader.begin(), rheader.end());
-    aes_ctr_byte_flow_.init(as<UInt256>(rheader.data() + 8), as<UInt128>(rheader.data() + 8 + 32));
-    aes_ctr_byte_flow_.set_input(input_);
-    aes_ctr_byte_flow_ >> byte_flow_sink_;
-
-    output_key_ = as<UInt256>(header.data() + 8);
-    output_state_.init(output_key_, as<UInt128>(header.data() + 8 + 32));
-    output_->append(header_slice.substr(0, 56));
-    output_state_.encrypt(header_slice, header_slice);
-    output_->append(header_slice.substr(56, 8));
-  }
+  void init(ChainBufferReader *input, ChainBufferWriter *output) override;
 
   bool can_read() const override {
     return true;
@@ -183,11 +155,17 @@ class ObfuscatedTransport : public IStreamTransport {
     return 4;
   }
 
+  size_t max_append_size() const override {
+    return 15;
+  }
+
   TransportType get_type() const override {
-    return TransportType::ObfuscatedTcp;
+    return TransportType{TransportType::ObfuscatedTcp, dc_id_, secret_};
   }
 
  private:
+  int16 dc_id_;
+  std::string secret_;
   TransportImpl impl_;
   AesCtrByteFlow aes_ctr_byte_flow_;
   ByteFlowSink byte_flow_sink_;

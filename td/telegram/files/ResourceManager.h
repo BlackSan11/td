@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -7,7 +7,6 @@
 #pragma once
 
 #include "td/actor/actor.h"
-#include "td/actor/PromiseFuture.h"
 
 #include "td/telegram/files/FileLoaderActor.h"
 #include "td/telegram/files/ResourceState.h"
@@ -20,7 +19,7 @@
 namespace td {
 class ResourceManager : public Actor {
  public:
-  enum class Mode { Baseline, Greedy };
+  enum class Mode : int32 { Baseline, Greedy };
   explicit ResourceManager(Mode mode) : mode_(mode) {
   }
   // use through ActorShared
@@ -46,7 +45,7 @@ class ResourceManager : public Actor {
     }
   };
 
-  Container<std::unique_ptr<Node>> nodes_container_;
+  Container<unique_ptr<Node>> nodes_container_;
   vector<std::pair<int8, NodeId>> to_xload_;
   KHeap<int64> by_estimated_extra_;
   ResourceState resource_state_;

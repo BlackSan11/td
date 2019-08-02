@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -10,7 +10,7 @@
 #include "td/actor/impl/EventFull-decl.h"
 #include "td/actor/impl/Scheduler-decl.h"
 
-#include "td/utils/logging.h"
+#include "td/utils/common.h"
 #include "td/utils/ObjectPool.h"
 #include "td/utils/Slice.h"
 
@@ -19,6 +19,7 @@
 #include <utility>
 
 namespace td {
+
 inline Actor::Actor(Actor &&other) {
   CHECK(info_.empty());
   info_ = std::move(other.info_);
@@ -84,12 +85,18 @@ std::enable_if_t<std::is_base_of<Actor, ActorType>::value> finish_migrate(ActorT
 inline uint64 Actor::get_link_token() {
   return Scheduler::instance()->get_link_token(this);
 }
-inline void Actor::set_context(std::shared_ptr<ActorContext> context) {
-  info_->set_context(std::move(context));
+inline std::shared_ptr<ActorContext> Actor::set_context(std::shared_ptr<ActorContext> context) {
+  return info_->set_context(std::move(context));
 }
-inline void Actor::set_tag(CSlice tag) {
-  info_->get_context()->tag_ = tag.c_str();
+inline CSlice Actor::set_tag(CSlice tag) {
+  auto &tag_ref = info_->get_context()->tag_;
+  CSlice old_tag;
+  if (tag_ref) {
+    old_tag = CSlice(tag_ref);
+  }
+  tag_ref = tag.c_str();
   Scheduler::on_context_updated();
+  return old_tag;
 }
 
 inline void Actor::init(ObjectPool<ActorInfo>::OwnerPtr &&info) {

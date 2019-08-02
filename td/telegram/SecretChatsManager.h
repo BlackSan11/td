@@ -1,23 +1,21 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #pragma once
 
-#include "td/telegram/SecretChatActor.h"
-
 #include "td/telegram/secret_api.h"
 #include "td/telegram/telegram_api.h"
 
 #include "td/telegram/logevent/SecretChatEvent.h"
 #include "td/telegram/PtsManager.h"
+#include "td/telegram/SecretChatActor.h"
 #include "td/telegram/SecretChatId.h"
 
 #include "td/actor/actor.h"
-
-#include "td/db/binlog/BinlogEvent.h"
+#include "td/actor/PromiseFuture.h"
 
 #include "td/utils/Time.h"
 
@@ -25,6 +23,9 @@
 #include <utility>
 
 namespace td {
+
+struct BinlogEvent;
+
 class SecretChatsManager : public Actor {
  public:
   explicit SecretChatsManager(ActorShared<> parent);
@@ -73,13 +74,13 @@ class SecretChatsManager : public Actor {
   void flush_pending_chat_updates();
   void do_update_chat(tl_object_ptr<telegram_api::updateEncryption> update);
 
-  void replay_inbound_message(std::unique_ptr<logevent::InboundSecretMessage> message);
-  void add_inbound_message(std::unique_ptr<logevent::InboundSecretMessage> message);
-  void replay_outbound_message(std::unique_ptr<logevent::OutboundSecretMessage> message);
-  void replay_close_chat(std::unique_ptr<logevent::CloseSecretChat> message);
-  void replay_create_chat(std::unique_ptr<logevent::CreateSecretChat> message);
+  void replay_inbound_message(unique_ptr<logevent::InboundSecretMessage> message);
+  void add_inbound_message(unique_ptr<logevent::InboundSecretMessage> message);
+  void replay_outbound_message(unique_ptr<logevent::OutboundSecretMessage> message);
+  void replay_close_chat(unique_ptr<logevent::CloseSecretChat> message);
+  void replay_create_chat(unique_ptr<logevent::CreateSecretChat> message);
 
-  std::unique_ptr<SecretChatActor::Context> make_secret_chat_context(int32 id);
+  unique_ptr<SecretChatActor::Context> make_secret_chat_context(int32 id);
   ActorId<SecretChatActor> get_chat_actor(int32 id);
   ActorId<SecretChatActor> create_chat_actor(int32 id);
   ActorId<SecretChatActor> create_chat_actor_impl(int32 id, bool can_be_empty);

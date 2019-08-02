@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -10,20 +10,29 @@
 #include "td/telegram/Global.h"
 #include "td/telegram/logevent/LogEvent.h"
 #include "td/telegram/net/ConnectionCreator.h"
+#include "td/telegram/net/DcId.h"
 #include "td/telegram/net/DcOptions.h"
 #include "td/telegram/net/NetQuery.h"
 #include "td/telegram/net/NetQueryDispatcher.h"
+#include "td/telegram/net/NetType.h"
+#include "td/telegram/net/PublicRsaKeyShared.h"
 #include "td/telegram/net/Session.h"
+#include "td/telegram/StateManager.h"
+#include "td/telegram/TdDb.h"
+#include "td/telegram/telegram_api.h"
+
+#include "td/mtproto/AuthData.h"
+#include "td/mtproto/AuthKey.h"
+#include "td/mtproto/crypto.h"
+#include "td/mtproto/RawConnection.h"
 
 #if !TD_EMSCRIPTEN  //FIXME
 #include "td/net/HttpQuery.h"
-#include "td/net/SslFd.h"
+#include "td/net/SslStream.h"
 #include "td/net/Wget.h"
 #endif
 
 #include "td/actor/actor.h"
-
-#include "td/telegram/telegram_api.h"
 
 #include "td/utils/base64.h"
 #include "td/utils/buffer.h"
@@ -36,7 +45,9 @@
 #include "td/utils/port/Clocks.h"
 #include "td/utils/Random.h"
 #include "td/utils/Time.h"
+#include "td/utils/tl_helpers.h"
 #include "td/utils/tl_parsers.h"
+#include "td/utils/UInt.h"
 
 #include <algorithm>
 #include <memory>
@@ -44,7 +55,7 @@
 
 namespace td {
 
-static int VERBOSITY_NAME(config_recoverer) = VERBOSITY_NAME(INFO);
+int VERBOSITY_NAME(config_recoverer) = VERBOSITY_NAME(INFO);
 
 Result<SimpleConfig> decode_config(Slice input) {
   static auto rsa = td::RSA::from_pem(
@@ -78,8 +89,8 @@ Result<SimpleConfig> decode_config(Slice input) {
   MutableSlice data_cbc = data_rsa_slice.substr(32);
   UInt256 key;
   UInt128 iv;
-  MutableSlice(key.raw, sizeof(key.raw)).copy_from(data_rsa_slice.substr(0, 32));
-  MutableSlice(iv.raw, sizeof(iv.raw)).copy_from(data_rsa_slice.substr(16, 16));
+  as_slice(key).copy_from(data_rsa_slice.substr(0, 32));
+  as_slice(iv).copy_from(data_rsa_slice.substr(16, 16));
   aes_cbc_decrypt(key, &iv, data_cbc, data_cbc);
 
   CHECK(data_cbc.size() == 224);
@@ -105,10 +116,14 @@ Result<SimpleConfig> decode_config(Slice input) {
   return std::move(config);
 }
 
-ActorOwn<> get_simple_config_google_app(Promise<SimpleConfig> promise, bool is_test, int32 scheduler_id) {
+static ActorOwn<> get_simple_config_impl(Promise<SimpleConfig> promise, int32 scheduler_id, string url, string host,
+                                         bool prefer_ipv6) {
+  VLOG(config_recoverer) << "Request simple config from " << url;
 #if TD_EMSCRIPTEN  // FIXME
   return ActorOwn<>();
 #else
+  const int timeout = 10;
+  const int ttl = 3;
   return ActorOwn<>(create_actor_on_scheduler<Wget>(
       "Wget", scheduler_id,
       PromiseCreator::lambda([promise = std::move(promise)](Result<HttpQueryPtr> r_query) mutable {
@@ -117,16 +132,32 @@ ActorOwn<> get_simple_config_google_app(Promise<SimpleConfig> promise, bool is_t
           return decode_config(http_query->content_);
         }());
       }),
-      PSTRING() << "https://www.google.com/" << (is_test ? "test/" : ""),
-      std::vector<std::pair<string, string>>({{"Host", "dns-telegram.appspot.com"}}), 10 /*timeout*/, 3 /*ttl*/,
-      SslFd::VerifyPeer::Off));
+      std::move(url), std::vector<std::pair<string, string>>({{"Host", std::move(host)}}), timeout, ttl, prefer_ipv6,
+      SslStream::VerifyPeer::Off));
 #endif
 }
 
-ActorOwn<> get_simple_config_google_dns(Promise<SimpleConfig> promise, bool is_test, int32 scheduler_id) {
+ActorOwn<> get_simple_config_azure(Promise<SimpleConfig> promise, const ConfigShared *shared_config, bool is_test,
+                                   int32 scheduler_id) {
+  string url = PSTRING() << "https://software-download.microsoft.com/" << (is_test ? "test" : "prod")
+                         << "v2/config.txt";
+  const bool prefer_ipv6 = shared_config == nullptr ? false : shared_config->get_option_boolean("prefer_ipv6");
+  return get_simple_config_impl(std::move(promise), scheduler_id, std::move(url), "tcdnb.azureedge.net", prefer_ipv6);
+}
+
+ActorOwn<> get_simple_config_google_dns(Promise<SimpleConfig> promise, const ConfigShared *shared_config, bool is_test,
+                                        int32 scheduler_id) {
+  VLOG(config_recoverer) << "Request simple config from Google DNS";
 #if TD_EMSCRIPTEN  // FIXME
   return ActorOwn<>();
 #else
+  string name = shared_config == nullptr ? string() : shared_config->get_option_string("dc_txt_domain_name");
+  const int timeout = 10;
+  const int ttl = 3;
+  const bool prefer_ipv6 = shared_config == nullptr ? false : shared_config->get_option_boolean("prefer_ipv6");
+  if (name.empty()) {
+    name = is_test ? "tapv2.stel.com" : "apv2.stel.com";
+  }
   return ActorOwn<>(create_actor_on_scheduler<Wget>(
       "Wget", scheduler_id,
       PromiseCreator::lambda([promise = std::move(promise)](Result<HttpQueryPtr> r_query) mutable {
@@ -137,7 +168,7 @@ ActorOwn<> get_simple_config_google_dns(Promise<SimpleConfig> promise, bool is_t
             return Status::Error("json error");
           }
           auto &answer_object = json.get_object();
-          TRY_RESULT(answer, get_json_object_field(answer_object, "Answer", JsonValue::Type::Array));
+          TRY_RESULT(answer, get_json_object_field(answer_object, "Answer", JsonValue::Type::Array, false));
           auto &answer_array = answer.get_array();
           vector<string> parts;
           for (auto &v : answer_array) {
@@ -145,7 +176,7 @@ ActorOwn<> get_simple_config_google_dns(Promise<SimpleConfig> promise, bool is_t
               return Status::Error("json error");
             }
             auto &data_object = v.get_object();
-            TRY_RESULT(part, get_json_object_string_field(data_object, "data"));
+            TRY_RESULT(part, get_json_object_string_field(data_object, "data", false));
             parts.push_back(std::move(part));
           }
           if (parts.size() != 2) {
@@ -160,13 +191,13 @@ ActorOwn<> get_simple_config_google_dns(Promise<SimpleConfig> promise, bool is_t
           return decode_config(data);
         }());
       }),
-      PSTRING() << "https://google.com/resolve?name=" << (is_test ? "t" : "") << "ap.stel.com&type=16",
-      std::vector<std::pair<string, string>>({{"Host", "dns.google.com"}}), 10 /*timeout*/, 3 /*ttl*/,
-      SslFd::VerifyPeer::Off));
+      PSTRING() << "https://www.google.com/resolve?name=" << url_encode(name) << "&type=16",
+      std::vector<std::pair<string, string>>({{"Host", "dns.google.com"}}), timeout, ttl, prefer_ipv6,
+      SslStream::VerifyPeer::Off));
 #endif
 }
 
-ActorOwn<> get_full_config(IPAddress ip_address, Promise<FullConfig> promise) {
+ActorOwn<> get_full_config(DcId dc_id, IPAddress ip_address, Promise<FullConfig> promise) {
   class SessionCallback : public Session::Callback {
    public:
     SessionCallback(ActorShared<> parent, IPAddress address)
@@ -176,37 +207,49 @@ ActorOwn<> get_full_config(IPAddress ip_address, Promise<FullConfig> promise) {
     }
     void on_closed() final {
     }
-    void request_raw_connection(Promise<std::unique_ptr<mtproto::RawConnection>> promise) final {
+    void request_raw_connection(Promise<unique_ptr<mtproto::RawConnection>> promise) final {
       request_raw_connection_cnt_++;
-      if (request_raw_connection_cnt_ <= 1) {
+      VLOG(config_recoverer) << "Request full config from " << address_ << ", try = " << request_raw_connection_cnt_;
+      if (request_raw_connection_cnt_ <= 2) {
         send_closure(G()->connection_creator(), &ConnectionCreator::request_raw_connection_by_ip, address_,
                      std::move(promise));
       } else {
-        //Delay all queries but first forever
+        // Delay all queries except first forever
         delay_forever_.push_back(std::move(promise));
       }
     }
     void on_tmp_auth_key_updated(mtproto::AuthKey auth_key) final {
-      //nop
+      // nop
+    }
+    void on_result(NetQueryPtr net_query) final {
+      G()->net_query_dispatcher().dispatch(std::move(net_query));
     }
 
    private:
     ActorShared<> parent_;
     IPAddress address_;
     size_t request_raw_connection_cnt_{0};
-    std::vector<Promise<std::unique_ptr<mtproto::RawConnection>>> delay_forever_;
+    std::vector<Promise<unique_ptr<mtproto::RawConnection>>> delay_forever_;
   };
 
   class SimpleAuthData : public AuthDataShared {
    public:
+    explicit SimpleAuthData(DcId dc_id) : dc_id_(dc_id) {
+    }
     DcId dc_id() const override {
-      return DcId::empty();
+      return dc_id_;
     }
     const std::shared_ptr<PublicRsaKeyShared> &public_rsa_key() override {
       return public_rsa_key_;
     }
     mtproto::AuthKey get_auth_key() override {
-      return auth_key_;
+      string dc_key = G()->td_db()->get_binlog_pmc()->get(auth_key_key());
+
+      mtproto::AuthKey res;
+      if (!dc_key.empty()) {
+        unserialize(res, dc_key).ensure();
+      }
+      return res;
     }
     std::pair<AuthState, bool> get_auth_state() override {
       auto auth_key = get_auth_key();
@@ -214,16 +257,15 @@ ActorOwn<> get_full_config(IPAddress ip_address, Promise<FullConfig> promise) {
       return std::make_pair(state, auth_key.was_auth_flag());
     }
     void set_auth_key(const mtproto::AuthKey &auth_key) override {
-      auth_key_ = auth_key;
+      G()->td_db()->get_binlog_pmc()->set(auth_key_key(), serialize(auth_key));
+
+      //notify();
     }
     void update_server_time_difference(double diff) override {
-      if (!has_server_time_difference_ || server_time_difference_ < diff) {
-        has_server_time_difference_ = true;
-        server_time_difference_ = diff;
-      }
+      G()->update_server_time_difference(diff);
     }
     double get_server_time_difference() override {
-      return server_time_difference_;
+      return G()->get_server_time_difference();
     }
     void add_auth_key_listener(unique_ptr<Listener> listener) override {
       if (listener->notify()) {
@@ -232,41 +274,57 @@ ActorOwn<> get_full_config(IPAddress ip_address, Promise<FullConfig> promise) {
     }
 
     void set_future_salts(const std::vector<mtproto::ServerSalt> &future_salts) override {
-      future_salts_ = future_salts;
+      G()->td_db()->get_binlog_pmc()->set(future_salts_key(), serialize(future_salts));
     }
+
     std::vector<mtproto::ServerSalt> get_future_salts() override {
-      return future_salts_;
+      string future_salts = G()->td_db()->get_binlog_pmc()->get(future_salts_key());
+      std::vector<mtproto::ServerSalt> res;
+      if (!future_salts.empty()) {
+        unserialize(res, future_salts).ensure();
+      }
+      return res;
     }
 
    private:
-    std::shared_ptr<PublicRsaKeyShared> public_rsa_key_ = std::make_shared<PublicRsaKeyShared>(DcId::empty());
-    mtproto::AuthKey auth_key_;
-    bool has_server_time_difference_ = false;
-    double server_time_difference_ = 0;
+    DcId dc_id_;
+    std::shared_ptr<PublicRsaKeyShared> public_rsa_key_ =
+        std::make_shared<PublicRsaKeyShared>(DcId::empty(), G()->is_test_dc());
 
-    std::vector<mtproto::ServerSalt> future_salts_;
-
-    std::vector<std::unique_ptr<Listener>> auth_key_listeners_;
+    std::vector<unique_ptr<Listener>> auth_key_listeners_;
     void notify() {
-      auto it = remove_if(auth_key_listeners_.begin(), auth_key_listeners_.end(),
-                          [&](auto &listener) { return !listener->notify(); });
+      auto it = std::remove_if(auth_key_listeners_.begin(), auth_key_listeners_.end(),
+                               [&](auto &listener) { return !listener->notify(); });
       auth_key_listeners_.erase(it, auth_key_listeners_.end());
+    }
+
+    string auth_key_key() const {
+      return PSTRING() << "config_recovery_auth" << dc_id().get_raw_id();
+    }
+    string future_salts_key() const {
+      return PSTRING() << "config_recovery_salt" << dc_id().get_raw_id();
     }
   };
 
   class GetConfigActor : public NetQueryCallback {
    public:
-    GetConfigActor(IPAddress ip_address, Promise<FullConfig> promise)
-        : ip_address_(std::move(ip_address)), promise_(std::move(promise)) {
+    GetConfigActor(DcId dc_id, IPAddress ip_address, Promise<FullConfig> promise)
+        : dc_id_(dc_id), ip_address_(std::move(ip_address)), promise_(std::move(promise)) {
     }
 
    private:
     void start_up() override {
-      auto session_callback = std::make_unique<SessionCallback>(actor_shared(this, 1), std::move(ip_address_));
+      auto session_callback = make_unique<SessionCallback>(actor_shared(this, 1), std::move(ip_address_));
 
-      auto auth_data = std::make_shared<SimpleAuthData>();
-      session_ = create_actor<Session>("ConfigSession", std::move(session_callback), std::move(auth_data),
-                                       false /*is_main*/, false /*use_pfs*/, true /*is_cdn*/, mtproto::AuthKey());
+      auto auth_data = std::make_shared<SimpleAuthData>(dc_id_);
+      int32 int_dc_id = dc_id_.get_raw_id();
+      if (G()->is_test_dc()) {
+        int_dc_id += 10000;
+      }
+      session_ =
+          create_actor<Session>("ConfigSession", std::move(session_callback), std::move(auth_data), int_dc_id,
+                                false /*is_main*/, true /*use_pfs*/, false /*is_cdn*/, false /*need_destroy_auth_key*/,
+                                mtproto::AuthKey(), std::vector<mtproto::ServerSalt>());
       auto query = G()->net_query_creator().create(create_storer(telegram_api::help_getConfig()), DcId::empty(),
                                                    NetQuery::Type::Common, NetQuery::AuthFlag::Off,
                                                    NetQuery::GzipFlag::On, 60 * 60 * 24);
@@ -281,7 +339,9 @@ ActorOwn<> get_full_config(IPAddress ip_address, Promise<FullConfig> promise) {
     }
     void hangup_shared() override {
       if (get_link_token() == 1) {
-        promise_.set_error(Status::Error("Failed"));
+        if (promise_) {
+          promise_.set_error(Status::Error("Failed"));
+        }
         stop();
       }
     }
@@ -290,15 +350,16 @@ ActorOwn<> get_full_config(IPAddress ip_address, Promise<FullConfig> promise) {
     }
     void timeout_expired() override {
       promise_.set_error(Status::Error("Timeout expired"));
-      stop();
+      session_.reset();
     }
 
+    DcId dc_id_;
     IPAddress ip_address_;
     ActorOwn<Session> session_;
     Promise<FullConfig> promise_;
   };
 
-  return ActorOwn<>(create_actor<GetConfigActor>("GetConfigActor", std::move(ip_address), std::move(promise)));
+  return ActorOwn<>(create_actor<GetConfigActor>("GetConfigActor", dc_id, std::move(ip_address), std::move(promise)));
 }
 
 class ConfigRecoverer : public Actor {
@@ -323,7 +384,19 @@ class ConfigRecoverer : public Actor {
     loop();
   }
   void on_online(bool is_online) {
+    if (is_online_ == is_online) {
+      return;
+    }
+
     is_online_ = is_online;
+    if (is_online) {
+      if (simple_config_.dc_options.empty()) {
+        simple_config_expires_at_ = 0;
+      }
+      if (full_config_ == nullptr) {
+        full_config_expires_at_ = 0;
+      }
+    }
     loop();
   }
   void on_connecting(bool is_connecting) {
@@ -335,27 +408,61 @@ class ConfigRecoverer : public Actor {
     loop();
   }
 
+  static bool check_phone_number_rules(Slice phone_number, Slice rules) {
+    if (rules.empty() || phone_number.empty()) {
+      return true;
+    }
+
+    bool found = false;
+    for (auto prefix : full_split(rules, ',')) {
+      if (prefix.empty()) {
+        found = true;
+      } else if (prefix[0] == '+' && begins_with(phone_number, prefix.substr(1))) {
+        found = true;
+      } else if (prefix[0] == '-' && begins_with(phone_number, prefix.substr(1))) {
+        return false;
+      } else {
+        LOG(ERROR) << "Invalid prefix rule " << prefix;
+      }
+    }
+    return found;
+  }
+
   void on_simple_config(Result<SimpleConfig> r_simple_config, bool dummy) {
     simple_config_query_.reset();
-    auto r_dc_options = [&]() -> Result<DcOptions> {
-      if (r_simple_config.is_error()) {
-        return r_simple_config.move_as_error();
-      }
-      return DcOptions(*r_simple_config.ok());
-    }();
     dc_options_i_ = 0;
-    if (r_dc_options.is_ok()) {
-      simple_config_ = r_dc_options.move_as_ok();
-      VLOG(config_recoverer) << "Got SimpleConfig " << simple_config_;
-      simple_config_expire_at_ = Time::now_cached() + Random::fast(20 * 60, 30 * 60);
+    if (r_simple_config.is_ok()) {
+      auto config = r_simple_config.move_as_ok();
+      VLOG(config_recoverer) << "Receive raw " << to_string(config);
+      if (config->expires_ >= G()->unix_time()) {
+        string phone_number = G()->shared_config().get_option_string("my_phone_number");
+        simple_config_.dc_options.clear();
+
+        for (auto &rule : config->rules_) {
+          if (check_phone_number_rules(phone_number, rule->phone_prefix_rules_) && DcId::is_valid(rule->dc_id_)) {
+            DcId dc_id = DcId::internal(rule->dc_id_);
+            for (auto &ip_port : rule->ips_) {
+              DcOption option(dc_id, *ip_port);
+              if (option.is_valid()) {
+                simple_config_.dc_options.push_back(std::move(option));
+              }
+            }
+          }
+        }
+        VLOG(config_recoverer) << "Got SimpleConfig " << simple_config_;
+      } else {
+        VLOG(config_recoverer) << "Config has expired at " << config->expires_;
+      }
+
+      simple_config_expires_at_ = get_config_expire_time();
       simple_config_at_ = Time::now_cached();
       for (size_t i = 1; i < simple_config_.dc_options.size(); i++) {
         std::swap(simple_config_.dc_options[i], simple_config_.dc_options[Random::fast(0, static_cast<int>(i))]);
       }
     } else {
-      VLOG(config_recoverer) << "Get SimpleConfig error " << r_dc_options.error();
+      VLOG(config_recoverer) << "Get SimpleConfig error " << r_simple_config.error();
       simple_config_ = DcOptions();
-      simple_config_expire_at_ = Time::now_cached() + Random::fast(15, 30);
+      simple_config_expires_at_ = get_failed_config_expire_time();
     }
     update_dc_options();
     loop();
@@ -366,14 +473,30 @@ class ConfigRecoverer : public Actor {
     if (r_full_config.is_ok()) {
       full_config_ = r_full_config.move_as_ok();
       VLOG(config_recoverer) << "Got FullConfig " << to_string(full_config_);
-      full_config_expire_at_ = Time::now() + Random::fast(20 * 60, 30 * 60);
+      full_config_expires_at_ = get_config_expire_time();
       send_closure(G()->connection_creator(), &ConnectionCreator::on_dc_options, DcOptions(full_config_->dc_options_));
     } else {
       VLOG(config_recoverer) << "Get FullConfig error " << r_full_config.error();
       full_config_ = FullConfig();
-      full_config_expire_at_ = Time::now() + Random::fast(15, 30);
+      full_config_expires_at_ = get_failed_config_expire_time();
     }
     loop();
+  }
+
+  bool expect_blocking() const {
+    return G()->shared_config().get_option_boolean("expect_blocking", true);
+  }
+
+  double get_config_expire_time() const {
+    auto offline_delay = is_online_ ? 0 : 5 * 60;
+    auto expire_time = expect_blocking() ? Random::fast(2 * 60, 3 * 60) : Random::fast(20 * 60, 30 * 60);
+    return Time::now() + offline_delay + expire_time;
+  }
+
+  double get_failed_config_expire_time() const {
+    auto offline_delay = is_online_ ? 0 : 5 * 60;
+    auto expire_time = expect_blocking() ? Random::fast(5, 7) : Random::fast(15, 30);
+    return Time::now() + offline_delay + expire_time;
   }
 
   bool is_connecting_{false};
@@ -386,7 +509,7 @@ class ConfigRecoverer : public Actor {
   uint32 network_generation_{0};
 
   DcOptions simple_config_;
-  double simple_config_expire_at_{-1};
+  double simple_config_expires_at_{0};
   double simple_config_at_{0};
   ActorOwn<> simple_config_query_;
 
@@ -397,7 +520,7 @@ class ConfigRecoverer : public Actor {
   size_t dc_options_i_;
 
   FullConfig full_config_;
-  double full_config_expire_at_{0};
+  double full_config_expires_at_{0};
   ActorOwn<> full_config_query_;
 
   uint32 ref_cnt_{1};
@@ -425,11 +548,17 @@ class ConfigRecoverer : public Actor {
   }
 
   double max_connecting_delay() const {
-    return 20;
+    return expect_blocking() ? 5 : 20;
   }
   void loop() override {
     if (close_flag_) {
       return;
+    }
+
+    if (is_connecting_) {
+      VLOG(config_recoverer) << "Failed to connect for " << Time::now_cached() - connecting_since_;
+    } else {
+      VLOG(config_recoverer) << "Successfully connected";
     }
 
     Timestamp wakeup_timestamp;
@@ -441,43 +570,48 @@ class ConfigRecoverer : public Actor {
       return false;
     };
 
-    VLOG(config_recoverer) << is_connecting_ << " " << Time::now_cached() - connecting_since_;
     bool has_connecting_problem =
         is_connecting_ && check_timeout(Timestamp::at(connecting_since_ + max_connecting_delay()));
-    bool is_valid_simple_config = !check_timeout(Timestamp::at(simple_config_expire_at_));
+    bool is_valid_simple_config = !check_timeout(Timestamp::at(simple_config_expires_at_));
     if (!is_valid_simple_config && !simple_config_.dc_options.empty()) {
       simple_config_ = DcOptions();
       update_dc_options();
     }
     bool need_simple_config = has_connecting_problem && !is_valid_simple_config && simple_config_query_.empty();
     bool has_dc_options = !dc_options_.dc_options.empty();
-    bool is_valid_full_config = !check_timeout(Timestamp::at(full_config_expire_at_));
+    bool is_valid_full_config = !check_timeout(Timestamp::at(full_config_expires_at_));
     bool need_full_config = has_connecting_problem && has_dc_options && !is_valid_full_config &&
-                            full_config_query_.empty() && check_timeout(Timestamp::at(dc_options_at_ + 10));
+                            full_config_query_.empty() &&
+                            check_timeout(Timestamp::at(dc_options_at_ + (expect_blocking() ? 5 : 10)));
     if (need_simple_config) {
       ref_cnt_++;
       VLOG(config_recoverer) << "ASK SIMPLE CONFIG";
       auto promise = PromiseCreator::lambda([actor_id = actor_shared(this)](Result<SimpleConfig> r_simple_config) {
         send_closure(actor_id, &ConfigRecoverer::on_simple_config, std::move(r_simple_config), false);
       });
-      if (simple_config_turn_ % 2 == 0) {
-        simple_config_query_ =
-            get_simple_config_google_app(std::move(promise), G()->is_test_dc(), G()->get_gc_scheduler_id());
-      } else {
-        simple_config_query_ =
-            get_simple_config_google_dns(std::move(promise), G()->is_test_dc(), G()->get_gc_scheduler_id());
-      }
+      auto get_simple_config = [&]() {
+        switch (simple_config_turn_ % 3) {
+          case 1:
+            return get_simple_config_azure;
+          case 0:
+          case 2:
+          default:
+            return get_simple_config_google_dns;
+        }
+      }();
+      simple_config_query_ =
+          get_simple_config(std::move(promise), &G()->shared_config(), G()->is_test_dc(), G()->get_gc_scheduler_id());
       simple_config_turn_++;
     }
 
     if (need_full_config) {
       ref_cnt_++;
       VLOG(config_recoverer) << "ASK FULL CONFIG";
-      full_config_query_ =
-          get_full_config(dc_options_.dc_options[dc_options_i_].get_ip_address(),
-                          PromiseCreator::lambda([actor_id = actor_shared(this)](Result<FullConfig> r_full_config) {
-                            send_closure(actor_id, &ConfigRecoverer::on_full_config, std::move(r_full_config), false);
-                          }));
+      full_config_query_ = get_full_config(
+          dc_options_.dc_options[dc_options_i_].get_dc_id(), dc_options_.dc_options[dc_options_i_].get_ip_address(),
+          PromiseCreator::lambda([actor_id = actor_shared(this)](Result<FullConfig> r_full_config) {
+            send_closure(actor_id, &ConfigRecoverer::on_full_config, std::move(r_full_config), false);
+          }));
       dc_options_i_ = (dc_options_i_ + 1) % dc_options_.dc_options.size();
     }
 
@@ -534,12 +668,12 @@ void ConfigManager::start_up() {
   config_recoverer_ = create_actor<ConfigRecoverer>("Recoverer", actor_shared());
   send_closure(config_recoverer_, &ConfigRecoverer::on_dc_options_update, load_dc_options_update());
   // }
-  auto expire = load_config_expire();
-  if (expire.is_in_past()) {
+  auto expire_time = load_config_expire_time();
+  if (expire_time.is_in_past()) {
     request_config();
   } else {
-    expire_ = expire;
-    set_timeout_in(expire_.in());
+    expire_time_ = expire_time;
+    set_timeout_in(expire_time_.in());
   }
 }
 
@@ -553,9 +687,9 @@ void ConfigManager::hangup() {
   try_stop();
 }
 void ConfigManager::loop() {
-  if (expire_ && expire_.is_in_past()) {
+  if (expire_time_ && expire_time_.is_in_past()) {
     request_config();
-    expire_ = {};
+    expire_time_ = {};
   }
 }
 void ConfigManager::try_stop() {
@@ -576,9 +710,9 @@ void ConfigManager::on_dc_options_update(DcOptions dc_options) {
   if (dc_options.dc_options.empty()) {
     return;
   }
-  expire_ = Timestamp::now();
-  save_config_expire(expire_);
-  set_timeout_in(expire_.in());
+  expire_time_ = Timestamp::now();
+  save_config_expire(expire_time_);
+  set_timeout_in(expire_time_.in());
 }
 
 void ConfigManager::request_config_from_dc_impl(DcId dc_id) {
@@ -594,9 +728,11 @@ void ConfigManager::on_result(NetQueryPtr res) {
   config_sent_cnt_--;
   auto r_config = fetch_result<telegram_api::help_getConfig>(std::move(res));
   if (r_config.is_error()) {
-    LOG(ERROR) << "TODO: getConfig failed: " << r_config.error();
-    expire_ = Timestamp::in(60.0);  // try again in a minute
-    set_timeout_in(expire_.in());
+    if (!G()->close_flag()) {
+      LOG(ERROR) << "TODO: getConfig failed: " << r_config.error();
+      expire_time_ = Timestamp::in(60.0);  // try again in a minute
+      set_timeout_in(expire_time_.in());
+    }
   } else {
     on_dc_options_update(DcOptions());
     process_config(r_config.move_as_ok());
@@ -620,32 +756,33 @@ DcOptions ConfigManager::load_dc_options_update() {
   return dc_options;
 }
 
-Timestamp ConfigManager::load_config_expire() {
-  auto expire_in = to_integer<int32>(G()->td_db()->get_binlog_pmc()->get("config_expire")) - Clocks::system();
+Timestamp ConfigManager::load_config_expire_time() {
+  auto expires_in = to_integer<int32>(G()->td_db()->get_binlog_pmc()->get("config_expire")) - Clocks::system();
 
-  if (expire_in < 0 || expire_in > 60 * 60 /* 1 hour */) {
+  if (expires_in < 0 || expires_in > 60 * 60 /* 1 hour */) {
     return Timestamp::now();
   } else {
-    return Timestamp::in(expire_in);
+    return Timestamp::in(expires_in);
   }
 }
 
 void ConfigManager::save_config_expire(Timestamp timestamp) {
-  G()->td_db()->get_binlog_pmc()->set("config_expire", to_string(static_cast<int>(Clocks::system() + expire_.in())));
+  G()->td_db()->get_binlog_pmc()->set("config_expire",
+                                      to_string(static_cast<int>(Clocks::system() + expire_time_.in())));
 }
 
 void ConfigManager::process_config(tl_object_ptr<telegram_api::config> config) {
   bool is_from_main_dc = G()->net_query_dispatcher().main_dc_id().get_value() == config->this_dc_;
 
   LOG(INFO) << to_string(config);
-  auto reload_in = std::max(60 /* at least 60 seconds*/, config->expires_ - config->date_);
+  auto reload_in = max(60 /* at least 60 seconds*/, config->expires_ - config->date_);
   save_config_expire(Timestamp::in(reload_in));
   reload_in -= Random::fast(0, reload_in / 5);
   if (!is_from_main_dc) {
     reload_in = 0;
   }
-  expire_ = Timestamp::in(reload_in);
-  set_timeout_at(expire_.at());
+  expire_time_ = Timestamp::in(reload_in);
+  set_timeout_at(expire_time_.at());
   LOG_IF(ERROR, config->test_mode_ != G()->is_test_dc()) << "Wrong parameter is_test";
 
   ConfigShared &shared_config = G()->shared_config();
@@ -653,6 +790,7 @@ void ConfigManager::process_config(tl_object_ptr<telegram_api::config> config) {
   // Do not save dc_options in config, because it will be interpreted and saved by ConnectionCreator.
   send_closure(G()->connection_creator(), &ConnectionCreator::on_dc_options, DcOptions(config->dc_options_));
 
+  shared_config.set_option_integer("recent_stickers_limit", config->stickers_recent_limit_);
   shared_config.set_option_integer("favorite_stickers_limit", config->stickers_faved_limit_);
   shared_config.set_option_integer("saved_animations_limit", config->saved_gifs_limit_);
   shared_config.set_option_integer("channels_read_media_period", config->channels_read_media_period_);
@@ -661,19 +799,50 @@ void ConfigManager::process_config(tl_object_ptr<telegram_api::config> config) {
   shared_config.set_option_integer("forwarded_message_count_max", config->forwarded_count_max_);
   shared_config.set_option_integer("basic_group_size_max", config->chat_size_max_);
   shared_config.set_option_integer("supergroup_size_max", config->megagroup_size_max_);
-  shared_config.set_option_integer("large_chat_size", config->chat_big_size_);
   shared_config.set_option_integer("pinned_chat_count_max", config->pinned_dialogs_count_max_);
+  if (is_from_main_dc || !shared_config.have_option("expect_blocking")) {
+    shared_config.set_option_boolean("expect_blocking",
+                                     (config->flags_ & telegram_api::config::BLOCKED_MODE_MASK) != 0);
+  }
+  if (is_from_main_dc || !shared_config.have_option("dc_txt_domain_name")) {
+    shared_config.set_option_string("dc_txt_domain_name", config->dc_txt_domain_name_);
+  }
+  if (is_from_main_dc || !shared_config.have_option("t_me_url")) {
+    auto url = config->me_url_prefix_;
+    if (!url.empty()) {
+      if (url.back() != '/') {
+        url.push_back('/');
+      }
+      shared_config.set_option_string("t_me_url", url);
+    }
+  }
   if (is_from_main_dc) {
+    shared_config.set_option_integer("webfile_dc_id", config->webfile_dc_id_);
     if ((config->flags_ & telegram_api::config::TMP_SESSIONS_MASK) != 0) {
-      G()->shared_config().set_option_integer("session_count", config->tmp_sessions_);
+      shared_config.set_option_integer("session_count", config->tmp_sessions_);
     } else {
-      G()->shared_config().set_option_empty("session_count");
+      shared_config.set_option_empty("session_count");
+    }
+    if ((config->flags_ & telegram_api::config::SUGGESTED_LANG_CODE_MASK) != 0) {
+      shared_config.set_option_string("suggested_language_pack_id", config->suggested_lang_code_);
+      shared_config.set_option_integer("language_pack_version", config->lang_pack_version_);
+      shared_config.set_option_integer("base_language_pack_version", config->base_lang_pack_version_);
+    } else {
+      shared_config.set_option_empty("suggested_language_pack_id");
+      shared_config.set_option_empty("language_pack_version");
+      shared_config.set_option_empty("base_language_pack_version");
     }
   }
 
-  shared_config.set_option_integer("rating_e_decay", config->rating_e_decay_);
-
   if (is_from_main_dc) {
+    shared_config.set_option_integer("edit_time_limit", config->edit_time_limit_);
+    shared_config.set_option_boolean("revoke_pm_inbox",
+                                     (config->flags_ & telegram_api::config::REVOKE_PM_INBOX_MASK) != 0);
+    shared_config.set_option_integer("revoke_time_limit", config->revoke_time_limit_);
+    shared_config.set_option_integer("revoke_pm_time_limit", config->revoke_pm_time_limit_);
+
+    shared_config.set_option_integer("rating_e_decay", config->rating_e_decay_);
+
     shared_config.set_option_boolean("calls_enabled", config->phonecalls_enabled_);
   }
   shared_config.set_option_integer("call_ring_timeout_ms", config->call_ring_timeout_ms_);
@@ -681,7 +850,35 @@ void ConfigManager::process_config(tl_object_ptr<telegram_api::config> config) {
   shared_config.set_option_integer("call_packet_timeout_ms", config->call_packet_timeout_ms_);
   shared_config.set_option_integer("call_receive_timeout_ms", config->call_receive_timeout_ms_);
 
+  shared_config.set_option_integer("message_text_length_max", config->message_length_max_);
+  shared_config.set_option_integer("message_caption_length_max", config->caption_length_max_);
+
+  if (config->gif_search_username_.empty()) {
+    shared_config.set_option_empty("animation_search_bot_username");
+  } else {
+    shared_config.set_option_string("animation_search_bot_username", config->gif_search_username_);
+  }
+  if (config->venue_search_username_.empty()) {
+    shared_config.set_option_empty("venue_search_bot_username");
+  } else {
+    shared_config.set_option_string("venue_search_bot_username", config->venue_search_username_);
+  }
+  if (config->img_search_username_.empty()) {
+    shared_config.set_option_empty("photo_search_bot_username");
+  } else {
+    shared_config.set_option_string("photo_search_bot_username", config->img_search_username_);
+  }
+
+  auto fix_timeout_ms = [](int32 timeout_ms) { return clamp(timeout_ms, 1000, 86400 * 1000); };
+
+  shared_config.set_option_integer("online_update_period_ms", fix_timeout_ms(config->online_update_period_ms_));
+
+  shared_config.set_option_integer("online_cloud_timeout_ms", fix_timeout_ms(config->online_cloud_timeout_ms_));
+  shared_config.set_option_integer("notification_cloud_delay_ms", fix_timeout_ms(config->notify_cloud_delay_ms_));
+  shared_config.set_option_integer("notification_default_delay_ms", fix_timeout_ms(config->notify_default_delay_ms_));
+
   // delete outdated options
+  shared_config.set_option_empty("suggested_language_code");
   shared_config.set_option_empty("chat_big_size");
   shared_config.set_option_empty("group_size_max");
   shared_config.set_option_empty("saved_gifs_limit");
@@ -691,36 +888,24 @@ void ConfigManager::process_config(tl_object_ptr<telegram_api::config> config) {
   shared_config.set_option_empty("group_chat_size_max");
   shared_config.set_option_empty("chat_size_max");
   shared_config.set_option_empty("megagroup_size_max");
-  shared_config.set_option_empty("online_update_period_ms");
   shared_config.set_option_empty("offline_blur_timeout_ms");
   shared_config.set_option_empty("offline_idle_timeout_ms");
-  shared_config.set_option_empty("online_cloud_timeout_ms");
   shared_config.set_option_empty("notify_cloud_delay_ms");
   shared_config.set_option_empty("notify_default_delay_ms");
-
-  // TODO implement online status updates
-  //  shared_config.set_option_integer("online_update_period_ms", config->online_update_period_ms_);
-  //  shared_config.set_option_integer("offline_blur_timeout_ms", config->offline_blur_timeout_ms_);
-  //  shared_config.set_option_integer("offline_idle_timeout_ms", config->offline_idle_timeout_ms_);
-  //  shared_config.set_option_integer("online_cloud_timeout_ms", config->online_cloud_timeout_ms_);
-  //  shared_config.set_option_integer("notify_cloud_delay_ms", config->notify_cloud_delay_ms_);
-  //  shared_config.set_option_integer("notify_default_delay_ms", config->notify_default_delay_ms_);
-
-  //  shared_config.set_option_integer("push_chat_period_ms", config->push_chat_period_ms_);
-  //  shared_config.set_option_integer("push_chat_limit", config->push_chat_limit_);
+  shared_config.set_option_empty("large_chat_size");
 
   if (is_from_main_dc) {
-    auto old_disabled_features = shared_config.get_options("disabled_");
-    for (auto &feature : config->disabled_features_) {
-      string option_name = "disabled_" + feature->feature_;
-      shared_config.set_option_string(option_name, feature->description_);
-      old_disabled_features.erase(option_name);
-    }
-
-    for (auto &feature : old_disabled_features) {
+    for (auto &feature : shared_config.get_options("disabled_")) {
       shared_config.set_option_empty(feature.first);
     }
   }
+
+  // TODO implement online status updates
+  //  shared_config.set_option_integer("offline_blur_timeout_ms", config->offline_blur_timeout_ms_);
+  //  shared_config.set_option_integer("offline_idle_timeout_ms", config->offline_idle_timeout_ms_);
+
+  //  shared_config.set_option_integer("push_chat_period_ms", config->push_chat_period_ms_);
+  //  shared_config.set_option_integer("push_chat_limit", config->push_chat_limit_);
 }
 
 }  // namespace td

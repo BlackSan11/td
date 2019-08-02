@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -9,7 +9,9 @@
 #include "td/actor/actor.h"
 
 namespace td {
+
 class Slot;
+
 class Signal {
  public:
   void emit();
@@ -20,6 +22,7 @@ class Signal {
  private:
   ActorId<Slot> slot_id_;
 };
+
 class Slot final : public Actor {
  public:
   Slot() = default;
@@ -101,6 +104,7 @@ class Slot final : public Actor {
     signal();
   }
 };
+
 inline void Signal::emit() {
   send_closure(slot_id_, &Slot::signal);
 }

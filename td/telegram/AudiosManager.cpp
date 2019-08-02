@@ -1,16 +1,12 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #include "td/telegram/AudiosManager.h"
 
-#include "td/actor/PromiseFuture.h"
-
-#include "td/telegram/DocumentsManager.h"
 #include "td/telegram/files/FileManager.h"
-#include "td/telegram/Global.h"
 #include "td/telegram/Td.h"
 
 #include "td/telegram/secret_api.h"
@@ -21,17 +17,15 @@
 #include "td/utils/misc.h"
 #include "td/utils/Status.h"
 
-#include <algorithm>
-
 namespace td {
 
 AudiosManager::AudiosManager(Td *td) : td_(td) {
 }
 
-int32 AudiosManager::get_audio_duration(FileId file_id) {
-  auto &audio = audios_[file_id];
-  CHECK(audio != nullptr);
-  return audio->duration;
+int32 AudiosManager::get_audio_duration(FileId file_id) const {
+  auto it = audios_.find(file_id);
+  CHECK(it != audios_.end());
+  return it->second->duration;
 }
 
 tl_object_ptr<td_api::audio> AudiosManager::get_audio_object(FileId file_id) {
@@ -42,13 +36,12 @@ tl_object_ptr<td_api::audio> AudiosManager::get_audio_object(FileId file_id) {
   auto &audio = audios_[file_id];
   CHECK(audio != nullptr);
   audio->is_changed = false;
-  return make_tl_object<td_api::audio>(audio->duration, audio->title, audio->performer, audio->file_name,
-                                       audio->mime_type,
-                                       get_photo_size_object(td_->file_manager_.get(), &audio->thumbnail),
-                                       td_->file_manager_->get_file_object(audio->file_id));
+  return make_tl_object<td_api::audio>(
+      audio->duration, audio->title, audio->performer, audio->file_name, audio->mime_type,
+      get_photo_size_object(td_->file_manager_.get(), &audio->thumbnail), td_->file_manager_->get_file_object(file_id));
 }
 
-FileId AudiosManager::on_get_audio(std::unique_ptr<Audio> new_audio, bool replace) {
+FileId AudiosManager::on_get_audio(unique_ptr<Audio> new_audio, bool replace) {
   auto file_id = new_audio->file_id;
   LOG(INFO) << "Receive audio " << file_id;
   auto &a = audios_[file_id];
@@ -103,7 +96,7 @@ FileId AudiosManager::dup_audio(FileId new_id, FileId old_id) {
   CHECK(old_audio != nullptr);
   auto &new_audio = audios_[new_id];
   CHECK(!new_audio);
-  new_audio = std::make_unique<Audio>(*old_audio);
+  new_audio = make_unique<Audio>(*old_audio);
   new_audio->file_id = new_id;
   new_audio->thumbnail.file_id = td_->file_manager_->dup_file_id(new_audio->thumbnail.file_id);
   return new_id;
@@ -172,11 +165,11 @@ void AudiosManager::delete_audio_thumbnail(FileId file_id) {
 
 void AudiosManager::create_audio(FileId file_id, PhotoSize thumbnail, string file_name, string mime_type,
                                  int32 duration, string title, string performer, bool replace) {
-  auto a = std::make_unique<Audio>();
+  auto a = make_unique<Audio>();
   a->file_id = file_id;
   a->file_name = std::move(file_name);
   a->mime_type = std::move(mime_type);
-  a->duration = std::max(duration, 0);
+  a->duration = max(duration, 0);
   a->title = std::move(title);
   a->performer = std::move(performer);
   a->thumbnail = std::move(thumbnail);
@@ -190,7 +183,7 @@ SecretInputMedia AudiosManager::get_secret_input_media(FileId audio_file_id,
   CHECK(audio != nullptr);
   auto file_view = td_->file_manager_->get_file_view(audio_file_id);
   auto &encryption_key = file_view.encryption_key();
-  if (encryption_key.empty()) {
+  if (!file_view.is_encrypted_secret() || encryption_key.empty()) {
     return SecretInputMedia{};
   }
   if (file_view.has_remote_location()) {
@@ -207,7 +200,7 @@ SecretInputMedia AudiosManager::get_secret_input_media(FileId audio_file_id,
     attributes.push_back(make_tl_object<secret_api::documentAttributeFilename>(audio->file_name));
   }
   attributes.push_back(make_tl_object<secret_api::documentAttributeAudio>(
-      secret_api::documentAttributeAudio::Flags::TITLE_MASK | secret_api::documentAttributeAudio::Flags::PERFORMER_MASK,
+      secret_api::documentAttributeAudio::TITLE_MASK | secret_api::documentAttributeAudio::PERFORMER_MASK,
       false /*ignored*/, audio->duration, audio->title, audio->performer, BufferSlice()));
 
   return SecretInputMedia{
@@ -225,13 +218,12 @@ tl_object_ptr<telegram_api::InputMedia> AudiosManager::get_input_media(
   if (file_view.is_encrypted()) {
     return nullptr;
   }
-  if (file_view.has_remote_location() && !file_view.remote_location().is_web()) {
+  if (file_view.has_remote_location() && !file_view.remote_location().is_web() && input_file == nullptr) {
     return make_tl_object<telegram_api::inputMediaDocument>(0, file_view.remote_location().as_input_document(), 0);
   }
   if (file_view.has_url()) {
     return make_tl_object<telegram_api::inputMediaDocumentExternal>(0, file_view.url(), 0);
   }
-  CHECK(!file_view.has_remote_location());
 
   if (input_file != nullptr) {
     const Audio *audio = get_audio(file_id);
@@ -255,6 +247,8 @@ tl_object_ptr<telegram_api::InputMedia> AudiosManager::get_input_media(
     return make_tl_object<telegram_api::inputMediaUploadedDocument>(
         flags, false /*ignored*/, std::move(input_file), std::move(input_thumbnail), mime_type, std::move(attributes),
         vector<tl_object_ptr<telegram_api::InputDocument>>(), 0);
+  } else {
+    CHECK(!file_view.has_remote_location());
   }
 
   return nullptr;

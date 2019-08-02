@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -13,6 +13,7 @@
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
 
+#include <algorithm>
 #include <limits>
 #include <utility>
 
@@ -64,13 +65,13 @@ static std::vector<PqQuery> gen_pq_queries() {
       res.emplace_back(p, q);
     }
   }
-  sort(res.begin(), res.end(), cmp);
+  std::sort(res.begin(), res.end(), cmp);
   return res;
 }
 
 static void test_pq(uint64 first, uint64 second) {
-  BigNum p = BigNum::from_decimal(PSLICE() << first);
-  BigNum q = BigNum::from_decimal(PSLICE() << second);
+  BigNum p = BigNum::from_decimal(PSLICE() << first).move_as_ok();
+  BigNum q = BigNum::from_decimal(PSLICE() << second).move_as_ok();
 
   BigNum pq;
   BigNumContext context;
@@ -79,13 +80,13 @@ static void test_pq(uint64 first, uint64 second) {
 
   std::string p_str, q_str;
   int err = td::pq_factorize(pq_str, &p_str, &q_str);
-  CHECK(err == 0) << first << " * " << second;
+  LOG_CHECK(err == 0) << first << " * " << second;
 
   BigNum p_res = BigNum::from_binary(p_str);
   BigNum q_res = BigNum::from_binary(q_str);
 
-  CHECK(p_str == p.to_binary()) << td::tag("got", p_res.to_decimal()) << td::tag("expected", first);
-  CHECK(q_str == q.to_binary()) << td::tag("got", q_res.to_decimal()) << td::tag("expected", second);
+  LOG_CHECK(p_str == p.to_binary()) << td::tag("got", p_res.to_decimal()) << td::tag("expected", first);
+  LOG_CHECK(q_str == q.to_binary()) << td::tag("got", q_res.to_decimal()) << td::tag("expected", second);
 }
 #endif
 

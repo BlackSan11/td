@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -8,7 +8,7 @@
 
 namespace td {
 
-const unsigned char TlParser::empty_data[sizeof(UInt256)] = {};  // static zero-initialized
+alignas(4) const unsigned char TlParser::empty_data[sizeof(UInt256)] = {};  // static zero-initialized
 
 void TlParser::set_error(const string &error_message) {
   if (error.empty()) {
@@ -21,7 +21,8 @@ void TlParser::set_error(const string &error_message) {
   } else {
     data = empty_data;
     CHECK(error_pos != std::numeric_limits<size_t>::max());
-    CHECK(data_len == 0);
+    LOG_CHECK(data_len == 0) << data_len << " " << left_len << " " << data << " " << &empty_data[0] << " " << error_pos
+                             << " " << error;
     CHECK(left_len == 0);
   }
 }

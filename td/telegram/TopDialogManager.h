@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -16,14 +16,14 @@
 #include "td/telegram/net/NetQuery.h"
 
 #include "td/utils/common.h"
-#include "td/utils/logging.h"
 #include "td/utils/Time.h"
 
 #include <array>
 #include <utility>
 
 namespace td {
-enum class TopDialogCategory { Correspondent, BotPM, BotInline, Group, Channel, Call, Size };
+
+enum class TopDialogCategory : int32 { Correspondent, BotPM, BotInline, Group, Channel, Call, Size };
 
 inline TopDialogCategory top_dialog_category_from_td_api(const td_api::TopChatCategory &category) {
   switch (category.get_id()) {
@@ -49,6 +49,8 @@ class TopDialogManager : public NetQueryCallback {
   explicit TopDialogManager(ActorShared<> parent) : parent_(std::move(parent)) {
   }
 
+  void do_start_up();
+
   void on_dialog_used(TopDialogCategory category, DialogId dialog_id, int32 date);
 
   void remove_dialog(TopDialogCategory category, DialogId dialog_id, tl_object_ptr<telegram_api::InputPeer> input_peer);
@@ -57,15 +59,25 @@ class TopDialogManager : public NetQueryCallback {
 
   void update_rating_e_decay();
 
+  void update_is_enabled(bool is_enabled);
+
  private:
   static constexpr size_t MAX_TOP_DIALOGS_LIMIT = 30;
-  static constexpr int32 SERVER_SYNC_DELAY = 86400;  // seconds
-  static constexpr int32 DB_SYNC_DELAY = 5;          // seconds
+  static constexpr int32 SERVER_SYNC_DELAY = 86400;      // seconds
+  static constexpr int32 SERVER_SYNC_RESEND_DELAY = 60;  // seconds
+  static constexpr int32 DB_SYNC_DELAY = 5;              // seconds
   ActorShared<> parent_;
 
   bool is_active_{false};
+  bool is_enabled_{true};
+  int32 rating_e_decay_ = 241920;
+
+  bool have_toggle_top_peers_query_ = false;
+  bool toggle_top_peers_query_is_enabled_ = false;
+  bool have_pending_toggle_top_peers_query_ = false;
+  bool pending_toggle_top_peers_query_ = false;
   bool was_first_sync_{false};
-  enum class SyncState { None, Pending, Ok };
+  enum class SyncState : int32 { None, Pending, Ok };
   SyncState db_sync_state_ = SyncState::None;
   Timestamp first_unsync_change_;
   SyncState server_sync_state_ = SyncState::None;
@@ -91,14 +103,14 @@ class TopDialogManager : public NetQueryCallback {
     double rating_timestamp = 0;
     std::vector<TopDialog> dialogs;
   };
-  template <class T>
-  friend void parse(TopDialog &top_dialog, T &parser);
-  template <class T>
-  friend void store(const TopDialog &top_dialog, T &storer);
-  template <class T>
-  friend void parse(TopDialogs &top_dialogs, T &parser);
-  template <class T>
-  friend void store(const TopDialogs &top_dialogs, T &storer);
+  template <class StorerT>
+  friend void store(const TopDialog &top_dialog, StorerT &storer);
+  template <class ParserT>
+  friend void parse(TopDialog &top_dialog, ParserT &parser);
+  template <class StorerT>
+  friend void store(const TopDialogs &top_dialogs, StorerT &storer);
+  template <class ParserT>
+  friend void parse(TopDialogs &top_dialogs, ParserT &parser);
 
   std::array<TopDialogs, static_cast<size_t>(TopDialogCategory::Size)> by_category_;
 
@@ -106,7 +118,8 @@ class TopDialogManager : public NetQueryCallback {
   double current_rating_add(double rating_timestamp) const;
   void normalize_rating();
 
-  int32 rating_e_decay_ = 241920;
+  bool set_is_enabled(bool is_enabled);
+  void send_toggle_top_peers(bool is_enabled);
 
   void do_get_top_dialogs(GetTopDialogsQuery &&query);
 
@@ -117,7 +130,10 @@ class TopDialogManager : public NetQueryCallback {
 
   void on_result(NetQueryPtr net_query) override;
 
+  void init();
+
   void start_up() override;
   void loop() override;
 };
+
 }  // namespace td

@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -29,11 +29,11 @@ string HttpUrl::get_url() const {
     result += userinfo_;
     result += '@';
   }
-  if (is_ipv6) {
+  if (is_ipv6_) {
     result += '[';
   }
   result += host_;
-  if (is_ipv6) {
+  if (is_ipv6_) {
     result += ']';
   }
   if (specified_port_ > 0) {
@@ -95,6 +95,9 @@ Result<HttpUrl> parse_url(MutableSlice url, HttpUrl::Protocol default_protocol) 
   if (host.empty()) {
     return Status::Error("URL host is empty");
   }
+  if (host == ".") {
+    return Status::Error("Host is invalid");
+  }
 
   int specified_port = port;
   if (port == 0) {
@@ -111,7 +114,7 @@ Result<HttpUrl> parse_url(MutableSlice url, HttpUrl::Protocol default_protocol) 
     query.remove_suffix(1);
   }
   if (query.empty()) {
-    query = "/";
+    query = Slice("/");
   }
   string query_str;
   if (query[0] != '/') {
@@ -130,6 +133,13 @@ Result<HttpUrl> parse_url(MutableSlice url, HttpUrl::Protocol default_protocol) 
   string host_str = to_lower(host);
   for (size_t i = 0; i < host_str.size(); i++) {
     char c = host_str[i];
+    if (is_ipv6) {
+      if (c == ':' || ('0' <= c && c <= '9') || ('a' <= c && c <= 'f') || c == '.') {
+        continue;
+      }
+      return Status::Error("Wrong IPv6 URL host");
+    }
+
     if (('a' <= c && c <= 'z') || c == '.' || ('0' <= c && c <= '9') || c == '-' || c == '_' || c == '!' || c == '$' ||
         c == ',' || c == '~' || c == '*' || c == '\'' || c == '(' || c == ')' || c == ';' || c == '&' || c == '+' ||
         c == '=') {
@@ -145,7 +155,9 @@ Result<HttpUrl> parse_url(MutableSlice url, HttpUrl::Protocol default_protocol) 
           continue;
         }
       }
+      return Status::Error("Wrong percent-encoded symbol in URL host");
     }
+
     // all other symbols aren't allowed
     unsigned char uc = static_cast<unsigned char>(c);
     if (uc >= 128) {
@@ -162,6 +174,28 @@ StringBuilder &operator<<(StringBuilder &sb, const HttpUrl &url) {
   sb << tag("protocol", url.protocol_ == HttpUrl::Protocol::HTTP ? "HTTP" : "HTTPS") << tag("userinfo", url.userinfo_)
      << tag("host", url.host_) << tag("port", url.port_) << tag("query", url.query_);
   return sb;
+}
+
+string get_url_query_file_name(const string &query) {
+  Slice query_slice = query;
+  query_slice.truncate(query.find_first_of("?#"));
+
+  auto slash_pos = query_slice.rfind('/');
+  if (slash_pos < query_slice.size()) {
+    return query_slice.substr(slash_pos + 1).str();
+  }
+  return query_slice.str();
+}
+
+string get_url_file_name(const string &url) {
+  // TODO remove copy
+  string url_copy = url;
+  auto r_http_url = parse_url(url_copy);
+  if (r_http_url.is_error()) {
+    LOG(WARNING) << "Receive wrong URL \"" << url << '"';
+    return string();
+  }
+  return get_url_query_file_name(r_http_url.ok().query_);
 }
 
 }  // namespace td

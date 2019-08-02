@@ -1,26 +1,36 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 #include "td/telegram/SecretChatsManager.h"
 
-#include "td/actor/PromiseFuture.h"
-
 #include "td/telegram/ConfigShared.h"
 #include "td/telegram/ContactsManager.h"
 #include "td/telegram/DhCache.h"
+#include "td/telegram/Global.h"
 #include "td/telegram/logevent/SecretChatEvent.h"
 #include "td/telegram/MessageId.h"
 #include "td/telegram/MessagesManager.h"
 #include "td/telegram/net/NetQueryDispatcher.h"
 #include "td/telegram/SequenceDispatcher.h"
+#include "td/telegram/StateManager.h"
 #include "td/telegram/Td.h"
+#include "td/telegram/TdDb.h"
 
 #include "td/telegram/secret_api.h"
 #include "td/telegram/telegram_api.hpp"
 
+#include "td/mtproto/DhHandshake.h"
+
+#include "td/actor/PromiseFuture.h"
+
+#include "td/db/binlog/BinlogEvent.h"
+#include "td/db/binlog/BinlogHelper.h"
+#include "td/db/binlog/BinlogInterface.h"
+
+#include "td/utils/common.h"
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
@@ -31,16 +41,16 @@
 #include <memory>
 
 namespace td {
-//
+
 // qts and seq_no
 // Each EncryptedMessage (update_message) has qts.
 // Such updates must be handled in order of qts
 //
 // Qts should be handled on level of SecretChatsManager
 // 1. Each update can be received by SecretChatsManager multiple times.
-// 2. Each update should be sent to SecretChatActor only once. (Thought SecretChatActor mustn't rely it)
+// 2. Each update should be sent to SecretChatActor only once. (Though SecretChatActor mustn't rely it)
 // 3. Updates must be send in order of qts, without gaps.
-// 4. SecretChatActor must notify SecretChatManager when update is processed (saved in db)
+// 4. SecretChatActor must notify SecretChatManager when update is processed (saved in database)
 // 5. Only after all updates <= qts are processed by SecretChatActor, UpdatesManager should be
 // notified about new qts.
 //
@@ -74,9 +84,6 @@ namespace td {
 // 5. Handling gaps.
 // TODO
 // Just fail chat.
-//
-//
-//
 
 SecretChatsManager::SecretChatsManager(ActorShared<> parent) : parent_(std::move(parent)) {
 }
@@ -86,7 +93,7 @@ void SecretChatsManager::start_up() {
     dummy_mode_ = true;
     return;
   }
-  // TODO: use db wrapper
+  // TODO: use database wrapper
   auto pmc = G()->td_db()->get_binlog_pmc();
   auto qts_str = pmc->get("updates.qts");
   if (!qts_str.empty()) {
@@ -121,7 +128,7 @@ void SecretChatsManager::update_qts(int qts) {
   if (dummy_mode_ || close_flag_ || qts < 0) {
     return;
   }
-  LOG(INFO) << "update qts: " << qts;
+  LOG(INFO) << "Update qts to " << qts;
   add_qts(qts).set_value(Unit());
   has_qts_ = true;
   LOG(INFO) << "Update secret chats qts " << tag("qts", qts);
@@ -171,13 +178,13 @@ void SecretChatsManager::send_open_message(SecretChatId secret_chat_id, int64 ra
 
 void SecretChatsManager::delete_messages(SecretChatId secret_chat_id, vector<int64> random_ids, Promise<> promise) {
   auto actor = get_chat_actor(secret_chat_id.get());
-  auto safe_promise = SafePromise<>(std::move(promise), Status::Error(400, "Can't find secret chat"));
+  auto safe_promise = SafePromise<>(std::move(promise), Unit());
   send_closure(actor, &SecretChatActor::delete_messages, std::move(random_ids), std::move(safe_promise));
 }
 
 void SecretChatsManager::delete_all_messages(SecretChatId secret_chat_id, Promise<> promise) {
   auto actor = get_chat_actor(secret_chat_id.get());
-  auto safe_promise = SafePromise<>(std::move(promise), Status::Error(400, "Can't find secret chat"));
+  auto safe_promise = SafePromise<>(std::move(promise), Unit());
   send_closure(actor, &SecretChatActor::delete_all_messages, std::move(safe_promise));
 }
 
@@ -258,7 +265,7 @@ void SecretChatsManager::on_update_message(tl_object_ptr<telegram_api::updateNew
     }
   }
 
-  auto event = std::make_unique<logevent::InboundSecretMessage>();
+  auto event = make_unique<logevent::InboundSecretMessage>();
   event->qts = qts;
   downcast_call(*update->message_, [&](auto &x) {
     event->chat_id = x.chat_id_;
@@ -288,6 +295,10 @@ Promise<> SecretChatsManager::add_qts(int32 qts) {
 }
 
 void SecretChatsManager::replay_binlog_event(BinlogEvent &&binlog_event) {
+  if (dummy_mode_) {
+    binlog_erase(G()->td_db()->get_binlog(), binlog_event.id_);
+    return;
+  }
   auto r_message = logevent::SecretChatEvent::from_buffer_slice(binlog_event.data_as_buffer_slice());
   LOG_IF(FATAL, r_message.is_error()) << "Failed to deserialize event: " << r_message.error();
   auto message = r_message.move_as_ok();
@@ -295,17 +306,17 @@ void SecretChatsManager::replay_binlog_event(BinlogEvent &&binlog_event) {
   LOG(INFO) << "Process binlog event " << *message;
   switch (message->get_type()) {
     case logevent::SecretChatEvent::Type::InboundSecretMessage:
-      return replay_inbound_message(std::unique_ptr<logevent::InboundSecretMessage>(
-          static_cast<logevent::InboundSecretMessage *>(message.release())));
+      return replay_inbound_message(
+          unique_ptr<logevent::InboundSecretMessage>(static_cast<logevent::InboundSecretMessage *>(message.release())));
     case logevent::SecretChatEvent::Type::OutboundSecretMessage:
-      return replay_outbound_message(std::unique_ptr<logevent::OutboundSecretMessage>(
+      return replay_outbound_message(unique_ptr<logevent::OutboundSecretMessage>(
           static_cast<logevent::OutboundSecretMessage *>(message.release())));
     case logevent::SecretChatEvent::Type::CloseSecretChat:
       return replay_close_chat(
-          std::unique_ptr<logevent::CloseSecretChat>(static_cast<logevent::CloseSecretChat *>(message.release())));
+          unique_ptr<logevent::CloseSecretChat>(static_cast<logevent::CloseSecretChat *>(message.release())));
     case logevent::SecretChatEvent::Type::CreateSecretChat:
       return replay_create_chat(
-          std::unique_ptr<logevent::CreateSecretChat>(static_cast<logevent::CreateSecretChat *>(message.release())));
+          unique_ptr<logevent::CreateSecretChat>(static_cast<logevent::CreateSecretChat *>(message.release())));
   }
   LOG(FATAL) << "Unknown logevent type " << tag("type", format::as_hex(static_cast<int32>(message->get_type())));
 }
@@ -317,33 +328,37 @@ void SecretChatsManager::binlog_replay_finish() {
   }
 }
 
-void SecretChatsManager::replay_inbound_message(std::unique_ptr<logevent::InboundSecretMessage> message) {
-  LOG(INFO) << "Process inbound secret message " << tag("qts", message->qts);
+void SecretChatsManager::replay_inbound_message(unique_ptr<logevent::InboundSecretMessage> message) {
+  LOG(INFO) << "Replay inbound secret message in chat " << message->chat_id << " with qts " << message->qts;
   auto actor = get_chat_actor(message->chat_id);
   send_closure_later(actor, &SecretChatActor::replay_inbound_message, std::move(message));
 }
-void SecretChatsManager::add_inbound_message(std::unique_ptr<logevent::InboundSecretMessage> message) {
-  LOG(INFO) << "Process inbound secret message " << tag("qts", message->qts);
+
+void SecretChatsManager::add_inbound_message(unique_ptr<logevent::InboundSecretMessage> message) {
+  LOG(INFO) << "Process inbound secret message in chat " << message->chat_id << " with qts " << message->qts;
   message->qts_ack = add_qts(message->qts);
 
   auto actor = get_chat_actor(message->chat_id);
   send_closure(actor, &SecretChatActor::add_inbound_message, std::move(message));
 }
 
-void SecretChatsManager::replay_close_chat(std::unique_ptr<logevent::CloseSecretChat> message) {
-  LOG(INFO) << "Process close secret chat " << tag("id", message->chat_id);
+void SecretChatsManager::replay_close_chat(unique_ptr<logevent::CloseSecretChat> message) {
+  LOG(INFO) << "Replay close secret chat " << message->chat_id;
 
   auto actor = get_chat_actor(message->chat_id);
   send_closure_later(actor, &SecretChatActor::replay_close_chat, std::move(message));
 }
-void SecretChatsManager::replay_create_chat(std::unique_ptr<logevent::CreateSecretChat> message) {
-  LOG(INFO) << "Process create secret chat " << tag("id", message->random_id);
+
+void SecretChatsManager::replay_create_chat(unique_ptr<logevent::CreateSecretChat> message) {
+  LOG(INFO) << "Replay create secret chat " << message->random_id;
 
   auto actor = create_chat_actor(message->random_id);
   send_closure_later(actor, &SecretChatActor::replay_create_chat, std::move(message));
 }
 
-void SecretChatsManager::replay_outbound_message(std::unique_ptr<logevent::OutboundSecretMessage> message) {
+void SecretChatsManager::replay_outbound_message(unique_ptr<logevent::OutboundSecretMessage> message) {
+  LOG(INFO) << "Replay oubound secret message in chat " << message->chat_id;
+
   auto actor = get_chat_actor(message->chat_id);
   send_closure_later(actor, &SecretChatActor::replay_outbound_message, std::move(message));
 }
@@ -361,10 +376,10 @@ ActorId<SecretChatActor> SecretChatsManager::create_chat_actor(int32 id) {
   return create_chat_actor_impl(id, true);
 }
 
-std::unique_ptr<SecretChatActor::Context> SecretChatsManager::make_secret_chat_context(int32 id) {
+unique_ptr<SecretChatActor::Context> SecretChatsManager::make_secret_chat_context(int32 id) {
   class Context : public SecretChatActor::Context {
    public:
-    Context(int32 id, ActorShared<SecretChatsManager> parent, std::unique_ptr<SecretChatDb> secret_chat_db)
+    Context(int32 id, ActorShared<SecretChatsManager> parent, unique_ptr<SecretChatDb> secret_chat_db)
         : secret_chat_id_(SecretChatId(id)), parent_(std::move(parent)), secret_chat_db_(std::move(secret_chat_db)) {
       sequence_dispatcher_ = create_actor<SequenceDispatcher>("SecretChat SequenceDispatcher");
     }
@@ -468,10 +483,10 @@ std::unique_ptr<SecretChatActor::Context> SecretChatsManager::make_secret_chat_c
     SecretChatId secret_chat_id_;
     ActorOwn<SequenceDispatcher> sequence_dispatcher_;
     ActorShared<SecretChatsManager> parent_;
-    std::unique_ptr<SecretChatDb> secret_chat_db_;
+    unique_ptr<SecretChatDb> secret_chat_db_;
   };
-  return std::make_unique<Context>(id, actor_shared(this, id),
-                                   std::make_unique<SecretChatDb>(G()->td_db()->get_binlog_pmc_shared(), id));
+  return make_unique<Context>(id, actor_shared(this, id),
+                              td::make_unique<SecretChatDb>(G()->td_db()->get_binlog_pmc_shared(), id));
 }
 
 ActorId<SecretChatActor> SecretChatsManager::create_chat_actor_impl(int32 id, bool can_be_empty) {
@@ -545,7 +560,7 @@ void SecretChatsManager::flush_pending_chat_updates() {
   auto it = pending_chat_updates_.begin();
   while (it != pending_chat_updates_.end() && (it->first.is_in_past() || is_online_)) {
     do_update_chat(std::move(it->second));
-    it++;
+    ++it;
   }
   if (it != pending_chat_updates_.end()) {
     set_timeout_at(it->first.at());
@@ -554,6 +569,10 @@ void SecretChatsManager::flush_pending_chat_updates() {
 }
 
 void SecretChatsManager::on_online(bool is_online) {
+  if (is_online_ == is_online) {
+    return;
+  }
+
   is_online_ = is_online;
   flush_pending_chat_updates();
 }

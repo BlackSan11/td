@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -8,8 +8,9 @@
 
 #include "td/net/HttpOutboundConnection.h"
 #include "td/net/HttpQuery.h"
-#include "td/net/SslFd.h"
+#include "td/net/SslStream.h"
 
+#include "td/actor/actor.h"
 #include "td/actor/PromiseFuture.h"
 
 #include "td/utils/common.h"
@@ -22,7 +23,8 @@ namespace td {
 class Wget : public HttpOutboundConnection::Callback {
  public:
   explicit Wget(Promise<HttpQueryPtr> promise, string url, std::vector<std::pair<string, string>> headers = {},
-                int32 timeout_in = 10, int32 ttl = 3, SslFd::VerifyPeer verify_peer = SslFd::VerifyPeer::On);
+                int32 timeout_in = 10, int32 ttl = 3, bool prefer_ipv6 = false,
+                SslStream::VerifyPeer verify_peer = SslStream::VerifyPeer::On);
 
  private:
   Status try_init();
@@ -42,7 +44,8 @@ class Wget : public HttpOutboundConnection::Callback {
   std::vector<std::pair<string, string>> headers_;
   int32 timeout_in_;
   int32 ttl_;
-  SslFd::VerifyPeer verify_peer_;
+  bool prefer_ipv6_ = false;
+  SslStream::VerifyPeer verify_peer_;
 };
 
 }  // namespace td

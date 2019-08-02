@@ -10,13 +10,17 @@ class JavadocTlDocumentationGenerator extends TlDocumentationGenerator
 
     protected function escapeDocumentation($doc)
     {
+        $doc = preg_replace_callback('/(?<!["A-Za-z_\/])[A-Za-z]*_[A-Za-z_]*/',
+            function ($word_matches)
+            {
+                return preg_replace_callback('/_([A-Za-z])/', function ($matches) {return strtoupper($matches[1]);}, $word_matches[0]);
+            }, $doc);
         $doc = htmlspecialchars($doc);
         $doc = str_replace('*/', '*&#47;', $doc);
-        $doc = preg_replace_callback('/_([A-Za-z])/', function ($matches) {return strtoupper($matches[1]);}, $doc);
         return $doc;
     }
 
-    protected function getFieldName($name)
+    protected function getFieldName($name, $class_name)
     {
         if (substr($name, 0, 6) === 'param_') {
             $name = substr($name, 6);
@@ -26,7 +30,7 @@ class JavadocTlDocumentationGenerator extends TlDocumentationGenerator
 
     protected function getClassName($type)
     {
-        return implode(array_map('ucfirst', explode('.', trim($type, "\n ;"))));
+        return implode(array_map('ucfirst', explode('.', trim($type, "\r\n ;"))));
     }
 
     protected function getTypeName($type)
@@ -88,13 +92,13 @@ class JavadocTlDocumentationGenerator extends TlDocumentationGenerator
 
     protected function needSkipLine($line)
     {
-        $line = trim($line);
-        return strpos($line, 'public') !== 0 && !$this->isHeaderLine($line);
+        $line = $this->fixLine(trim($line));
+        return (strpos($line, 'public') !== 0 && !$this->isHeaderLine($line)) || $line === 'public @interface Constructors {}';
     }
 
     protected function isHeaderLine($line)
     {
-        return trim($line) === '@Override';
+        return trim($line) === '@Override' || trim($line) === '@Constructors';
     }
 
     protected function extractClassName($line)
@@ -117,7 +121,7 @@ class JavadocTlDocumentationGenerator extends TlDocumentationGenerator
     protected function addGlobalDocumentation()
     {
         if ($this->nullable_type) {
-            $nullable_type_import = "import $this->nullable_type;\n";
+            $nullable_type_import = "import $this->nullable_type;".PHP_EOL;
         } else {
             $nullable_type_import = '';
         }
@@ -186,13 +190,17 @@ EOT
 );
     }
 
-    protected function addClassDocumentation($class_name, $base_class_name, $description, $return_type)
+    protected function getFunctionReturnTypeDescription($return_type, $for_constructor)
     {
-        $return_type_description = $return_type ? "\n     *\n     * <p> Returns {@link $return_type $return_type} </p>" : '';
+        $shift = $for_constructor ? '         ' : '     ';
+        return PHP_EOL.$shift.'*'.PHP_EOL.$shift."* <p> Returns {@link $return_type $return_type} </p>";
+    }
 
+    protected function addClassDocumentation($class_name, $base_class_name, $description)
+    {
         $this->addDocumentation("    public static class $class_name extends $base_class_name {", <<<EOT
     /**
-     * $description$return_type_description
+     * $description
      */
 EOT
 );
@@ -208,39 +216,38 @@ EOT
 EOT
 );
         if ($may_be_null && $this->nullable_annotation && ($this->java_version >= 8 || substr($type_name, -1) != ']')) {
-            $this->addLineReplacement($full_line, "        public $this->nullable_annotation $type_name $field_name;\n");
+            $this->addLineReplacement($full_line, "        $this->nullable_annotation public $type_name $field_name;".PHP_EOL);
         }
     }
 
-    protected function addDefaultConstructorDocumentation($class_name)
+    protected function addDefaultConstructorDocumentation($class_name, $class_description)
     {
         $this->addDocumentation("        public $class_name() {", <<<EOT
         /**
-         * Default constructor.
+         * $class_description
          */
 EOT
 );
     }
 
-    protected function addFullConstructorDocumentation($class_name, $known_fields, $info)
+    protected function addFullConstructorDocumentation($class_name, $class_description, $known_fields, $info)
     {
-        $explicit = count($known_fields) == 1 ? 'explicit ' : '';
         $full_constructor = "        public $class_name(";
         $colon = '';
         foreach ($known_fields as $name => $type) {
-            $full_constructor .= $colon.$this->getTypeName($type).' '.$this->getFieldName($name);
+            $full_constructor .= $colon.$this->getTypeName($type).' '.$this->getFieldName($name, $class_name);
             $colon = ', ';
         }
         $full_constructor .= ') {';
 
         $full_doc = <<<EOT
         /**
-         * Constructor for initialization of all fields.
+         * $class_description
          *
 
 EOT;
         foreach ($known_fields as $name => $type) {
-            $full_doc .= '         * @param '.$this->getFieldName($name).' '.$info[$name]."\n";
+            $full_doc .= '         * @param '.$this->getFieldName($name, $class_name).' '.$info[$name].PHP_EOL;
         }
         $full_doc .= '         */';
         $this->addDocumentation($full_constructor, $full_doc);

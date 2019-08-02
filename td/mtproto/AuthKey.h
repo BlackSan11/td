@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -9,10 +9,9 @@
 #include "td/utils/common.h"
 #include "td/utils/Time.h"
 
-#include <memory>
-
 namespace td {
 namespace mtproto {
+
 class AuthKey {
  public:
   AuthKey() = default;
@@ -35,11 +34,7 @@ class AuthKey {
     return was_auth_flag_;
   }
   void set_auth_flag(bool new_auth_flag) {
-    if (new_auth_flag == false) {
-      clear();
-    } else {
-      was_auth_flag_ = true;
-    }
+    was_auth_flag_ |= new_auth_flag;
     auth_flag_ = new_auth_flag;
   }
 
@@ -49,22 +44,22 @@ class AuthKey {
   void set_need_header(bool need_header) {
     need_header_ = need_header;
   }
-  double expire_at() const {
-    return expire_at_;
+  double expires_at() const {
+    return expires_at_;
   }
-  void set_expire_at(double expire_at) {
-    expire_at_ = expire_at;
-    // expire_at_ = Time::now() + 60 * 60 + 10 * 60;
+  void set_expires_at(double expires_at) {
+    expires_at_ = expires_at;
+    // expires_at_ = Time::now() + 60 * 60 + 10 * 60;
   }
   void clear() {
     auth_key_.clear();
   }
 
-  enum { AUTH_FLAG = 1, WAS_AUTH_FLAG = 2 };
+  enum : int32 { AUTH_FLAG = 1, WAS_AUTH_FLAG = 2 };
   template <class StorerT>
   void store(StorerT &storer) const {
     storer.store_binary(auth_key_id_);
-    storer.store_binary((auth_flag_ ? AUTH_FLAG : 0) | (was_auth_flag_ ? WAS_AUTH_FLAG : 0));
+    storer.store_binary(static_cast<int32>((auth_flag_ ? AUTH_FLAG : 0) | (was_auth_flag_ ? WAS_AUTH_FLAG : 0)));
     storer.store_string(auth_key_);
   }
 
@@ -81,12 +76,11 @@ class AuthKey {
 
  private:
   uint64 auth_key_id_ = 0;
-  // TODO(perf): std::shared_ptr
   string auth_key_;
   bool auth_flag_ = false;
   bool was_auth_flag_ = false;
   bool need_header_ = true;
-  double expire_at_ = 0;
+  double expires_at_ = 0;
 };
 
 }  // namespace mtproto

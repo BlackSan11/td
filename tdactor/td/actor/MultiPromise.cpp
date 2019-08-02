@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2018
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2019
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -7,13 +7,14 @@
 #include "td/actor/MultiPromise.h"
 
 namespace td {
+
 void MultiPromiseActor::add_promise(Promise<Unit> &&promise) {
   promises_.emplace_back(std::move(promise));
 }
 
 Promise<Unit> MultiPromiseActor::get_promise() {
   if (empty()) {
-    register_actor("MultiPromise", this).release();
+    register_actor(name_, this).release();
   }
   CHECK(!promises_.empty());
 
@@ -87,4 +88,5 @@ MultiPromiseActorSafe::~MultiPromiseActorSafe() {
     register_existing_actor(std::move(multi_promise_)).release();
   }
 }
+
 }  // namespace td
